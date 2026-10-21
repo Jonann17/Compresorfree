@@ -15,13 +15,23 @@ No hace falta instalar Python ni FFmpeg: todo va incluido.
 > - **Mac**: arrastra la app a *Aplicaciones*, luego clic derecho -> *Abrir* -> *Abrir*.
 >   Si dice que "esta danada": `xattr -cr /Applications/Compresorfree.app` en la Terminal.
 
-## Publicar una nueva version
-Las apps se compilan solas con GitHub Actions en cada push a `main`
-(quedan en la pestana *Actions* como artefactos). Para publicarlas en *Releases*:
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
+## Actualizaciones
+La app busca actualizaciones sola al abrirse (y con el boton **Buscar actualizaciones**).
+Si hay una version nueva en *Releases*, la descarga, reemplaza la app y la vuelve a abrir.
+
+### Publicar una actualizacion
+1. Sube tus cambios a `main`.
+2. Crea un tag con el numero de version nuevo (siempre mayor que el anterior):
+   ```bash
+   git tag v1.1.0
+   git push origin v1.1.0
+   ```
+3. GitHub Actions compila Windows y Mac, crea la release `v1.1.0` y todas las apps
+   instaladas la detectan la proxima vez que se abran.
+
+La version que muestra la app sale del tag (no hace falta editar `version.py`).
+En cada push a `main` tambien se compilan las apps (pestana *Actions*, como artefactos)
+para probarlas antes de publicar.
 
 ## Compilar en tu computadora
 ```bash

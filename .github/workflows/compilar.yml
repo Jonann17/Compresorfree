@@ -25,6 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Poner la version del tag (v1.2.3 -> 1.2.3)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: echo "VERSION = \"${GITHUB_REF_NAME#v}\"" > version.py
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -32,7 +37,9 @@ jobs:
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-build.txt
+          # Solo ruedas precompiladas: en Mac Intel la ultima version de pikepdf no tiene
+          # rueda y se intentaria compilar desde codigo fuente (falla).
+          pip install --only-binary=pikepdf,Pillow -r requirements.txt -r requirements-build.txt
 
       - name: Compilar
         run: python compilar.py
@@ -68,3 +75,4 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: descargas/*
+          generate_release_notes: true

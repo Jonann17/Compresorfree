@@ -11,9 +11,11 @@ import os
 import sys
 import threading
 
+import actualizador
 import compresor_pdf
 import compresor_video
 from compresor_video import resumen
+from version import VERSION
 
 TIPOS = {
     "video": {
@@ -48,7 +50,7 @@ def iniciar_gui():
     from tkinter import filedialog, messagebox, ttk
 
     ventana = tk.Tk()
-    ventana.title("Compresorfree")
+    ventana.title(f"Compresorfree {VERSION}")
     ventana.resizable(False, False)
 
     var_tipo = tk.StringVar(value="video")
@@ -121,6 +123,9 @@ def iniciar_gui():
     barra.grid(row=6, column=0, columnspan=2, sticky="ew")
     ttk.Label(marco, textvariable=var_estado).grid(row=7, column=0, columnspan=2, sticky="w", pady=4)
 
+    btn_actualizar = ttk.Button(marco, text="Buscar actualizaciones")
+    btn_actualizar.grid(row=8, column=0, sticky="w")
+
     botones = ttk.Frame(marco)
     botones.grid(row=8, column=0, columnspan=2, sticky="e")
     btn_comprimir = ttk.Button(botones, text="Comprimir")
@@ -169,6 +174,81 @@ def iniciar_gui():
         threading.Thread(target=trabajo, daemon=True).start()
 
     btn_comprimir.config(command=iniciar)
+
+    # ------------------------------------------------------------ Actualizaciones
+
+    def en_ui(funcion, *args):
+        ventana.after(0, lambda: funcion(*args))
+
+    def ofrecer_actualizacion(info, manual):
+        btn_actualizar.config(state="normal")
+        if info is None:
+            if manual:
+                messagebox.showinfo("Actualizaciones", f"Ya tienes la ultima version ({VERSION}).")
+            return
+        notas = f"\n\nNovedades:\n{info['notas'][:600]}" if info["notas"].strip() else ""
+        if not actualizador.es_app_compilada() or not info["url"]:
+            if messagebox.askyesno(
+                    "Nueva version disponible",
+                    f"Hay una version nueva: {info['version']} (tienes {VERSION}).{notas}"
+                    "\n\nAbrir la pagina de descarga?"):
+                import webbrowser
+                webbrowser.open(actualizador.URL_RELEASES)
+            return
+        if messagebox.askyesno(
+                "Nueva version disponible",
+                f"Hay una version nueva: {info['version']} (tienes {VERSION}).{notas}"
+                "\n\nDescargar e instalar ahora? La app se reiniciara."):
+            instalar_actualizacion(info)
+
+    def instalar_actualizacion(info):
+        btn_comprimir.config(state="disabled")
+        btn_actualizar.config(state="disabled")
+        var_estado.set("Descargando actualizacion...")
+
+        def progreso(p):
+            en_ui(lambda: (barra.configure(value=p),
+                           var_estado.set(f"Descargando actualizacion... {p:.0f}%")))
+
+        def trabajo():
+            try:
+                paquete = actualizador.descargar(info["url"], progreso)
+                en_ui(var_estado.set, "Instalando actualizacion...")
+                actualizador.instalar(paquete)
+                en_ui(ventana.destroy)  # al cerrarse, el script copia la version nueva y la abre
+            except Exception as e:
+                msg = str(e)
+                def fallo():
+                    btn_comprimir.config(state="normal")
+                    btn_actualizar.config(state="normal")
+                    barra["value"] = 0
+                    var_estado.set("No se pudo actualizar.")
+                    messagebox.showerror("Error al actualizar", msg)
+                en_ui(fallo)
+
+        threading.Thread(target=trabajo, daemon=True).start()
+
+    def buscar_actualizacion(manual=False):
+        btn_actualizar.config(state="disabled")
+
+        def trabajo():
+            try:
+                info = actualizador.buscar_actualizacion()
+            except Exception as e:
+                msg = str(e)
+                def fallo():
+                    btn_actualizar.config(state="normal")
+                    if manual:
+                        messagebox.showerror("Actualizaciones",
+                                             f"No se pudo buscar actualizaciones:\n{msg}")
+                en_ui(fallo)
+                return
+            en_ui(ofrecer_actualizacion, info, manual)
+
+        threading.Thread(target=trabajo, daemon=True).start()
+
+    btn_actualizar.config(command=lambda: buscar_actualizacion(manual=True))
+    ventana.after(1500, buscar_actualizacion)  # busca en silencio al abrir la app
     ventana.mainloop()
 
 
