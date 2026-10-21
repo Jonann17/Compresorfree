@@ -21,15 +21,18 @@ Si hay una version nueva en *Releases*, la descarga, reemplaza la app y la vuelv
 
 ### Publicar una actualizacion
 1. Sube tus cambios a `main`.
-2. Crea un tag con el numero de version nuevo (siempre mayor que el anterior):
-   ```bash
-   git tag v1.1.0
-   git push origin v1.1.0
-   ```
+2. Publica la version nueva (siempre un numero mayor que el anterior), de cualquiera de estas formas:
+   - **Desde la web**: pestana *Actions* -> *Compilar apps (Windows y macOS)* -> *Run workflow*,
+     escribe la version (ej. `1.1.0`) y pulsa *Run workflow*.
+   - **Con git**:
+     ```bash
+     git tag v1.1.0
+     git push origin v1.1.0
+     ```
 3. GitHub Actions compila Windows y Mac, crea la release `v1.1.0` y todas las apps
    instaladas la detectan la proxima vez que se abran.
 
-La version que muestra la app sale del tag (no hace falta editar `version.py`).
+La version que muestra la app sale de ese numero (no hace falta editar `version.py`).
 En cada push a `main` tambien se compilan las apps (pestana *Actions*, como artefactos)
 para probarlas antes de publicar.
 

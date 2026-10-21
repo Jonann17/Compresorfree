@@ -5,6 +5,15 @@ on:
     branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version a publicar (ej. 1.1.0). Vacio = solo compilar"
+        required: false
+        default: ""
+
+env:
+  # Version a publicar: la del tag vX.Y.Z o la escrita al ejecutar el workflow a mano.
+  VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.version }}
 
 permissions:
   contents: write
@@ -25,10 +34,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Poner la version del tag (v1.2.3 -> 1.2.3)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Poner la version (v1.2.3 -> 1.2.3)
+        if: env.VERSION != ''
         shell: bash
-        run: echo "VERSION = \"${GITHUB_REF_NAME#v}\"" > version.py
+        run: echo "VERSION = \"${VERSION#v}\"" > version.py
 
       - uses: actions/setup-python@v5
         with:
@@ -64,7 +73,7 @@ jobs:
           if-no-files-found: error
 
   publicar:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
     needs: compilar
     runs-on: ubuntu-latest
     steps:
@@ -72,7 +81,12 @@ jobs:
         with:
           path: descargas
           merge-multiple: true
+      - name: Normalizar tag
+        run: echo "TAG=v${VERSION#v}" >> "$GITHUB_ENV"
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.TAG }}
+          name: Compresorfree ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
           files: descargas/*
           generate_release_notes: true
