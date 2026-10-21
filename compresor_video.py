@@ -26,6 +26,9 @@ NIVELES = {
     },
 }
 
+# En Windows evita que se abra una ventana de consola por cada llamada a FFmpeg.
+SIN_CONSOLA = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
 EXTENSIONES_VIDEO = (
     "*.mp4 *.m4v *.avi *.mkv *.mov *.wmv *.flv *.webm *.mpeg *.mpg *.3gp "
     "*.3g2 *.ts *.mts *.m2ts *.vob *.ogv *.asf *.rm *.rmvb *.divx *.f4v"
@@ -51,7 +54,7 @@ def obtener_duracion(ffmpeg, entrada):
     """Duracion del video en segundos (None si no se puede determinar)."""
     proc = subprocess.run(
         [ffmpeg, "-hide_banner", "-i", entrada],
-        capture_output=True, text=True, errors="replace",
+        capture_output=True, text=True, errors="replace", creationflags=SIN_CONSOLA,
     )
     m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", proc.stderr)
     if not m:
@@ -106,7 +109,7 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None)
 
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, errors="replace",
+        text=True, errors="replace", creationflags=SIN_CONSOLA,
     )
     errores = []
     hilo_err = threading.Thread(

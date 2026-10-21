@@ -48,7 +48,7 @@ def iniciar_gui():
     from tkinter import filedialog, messagebox, ttk
 
     ventana = tk.Tk()
-    ventana.title("Compresor de archivos")
+    ventana.title("Compresorfree")
     ventana.resizable(False, False)
 
     var_tipo = tk.StringVar(value="video")

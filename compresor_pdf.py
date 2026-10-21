@@ -9,6 +9,8 @@ import os
 import shutil
 import subprocess
 
+from compresor_video import SIN_CONSOLA
+
 NIVELES = {
     # calidad JPEG, lado maximo de imagen en pixeles, ajuste de Ghostscript
     "baja": {"calidad": 85, "lado_max": 2500, "gs": "/printer"},
@@ -36,7 +38,8 @@ def _comprimir_ghostscript(gs, entrada, salida, cfg):
         f"-dPDFSETTINGS={cfg['gs']}", "-dNOPAUSE", "-dQUIET", "-dBATCH",
         f"-sOutputFile={salida}", entrada,
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+    proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                          creationflags=SIN_CONSOLA)
     if proc.returncode != 0:
         raise RuntimeError(f"Ghostscript fallo:\n{proc.stderr[-1500:]}")
 

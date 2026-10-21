@@ -1,0 +1,70 @@
+name: Compilar apps (Windows y macOS)
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  compilar:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            nombre: Compresorfree-Windows
+          - os: macos-latest          # Apple Silicon (M1/M2/M3...)
+            nombre: Compresorfree-macOS-AppleSilicon
+          - os: macos-15-intel        # Mac con procesador Intel
+            nombre: Compresorfree-macOS-Intel
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Compilar
+        run: python compilar.py
+
+      - name: Empaquetar (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/Compresorfree -DestinationPath ${{ matrix.nombre }}.zip
+
+      - name: Empaquetar (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          hdiutil create -volname Compresorfree -srcfolder dist/Compresorfree.app \
+            -ov -format UDZO ${{ matrix.nombre }}.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.nombre }}
+          path: |
+            ${{ matrix.nombre }}.zip
+            ${{ matrix.nombre }}.dmg
+          if-no-files-found: error
+
+  publicar:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: compilar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: descargas
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: descargas/*
