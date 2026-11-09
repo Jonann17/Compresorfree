@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 
 # Niveles de compresion. Un CRF mas alto = archivo mas pequeno y menor calidad.
@@ -70,6 +71,56 @@ def ruta_salida_por_defecto(entrada, nivel):
     return f"{base}_comprimido_{nivel}.mp4"
 
 
+def _opciones_codificacion(cfg):
+    # Dimensiones pares (requisito de H.264/yuv420p) y limite de altura opcional.
+    if cfg["altura_max"]:
+        escala = f"scale=-2:'min({cfg['altura_max']},trunc(ih/2)*2)'"
+    else:
+        escala = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    return [
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-vf", escala,
+        "-c:v", "libx264", "-crf", str(cfg["crf"]), "-preset", cfg["preset"],
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", cfg["audio"], "-ac", "2",
+    ]
+
+
+def estimar(entrada, nivel="media", cancelar=None):
+    """Estima el tamano final en bytes comprimiendo algunos segundos de muestra
+    (al 20%, 50% y 80% del video) y extrapolando a la duracion total."""
+    cfg = NIVELES[nivel]
+    ffmpeg = buscar_ffmpeg()
+    duracion = obtener_duracion(ffmpeg, entrada)
+    if not duracion:
+        return None
+
+    largo = 4.0
+    if duracion <= 3 * largo * 1.5:
+        tramos = [(0.0, duracion)]  # video corto: se comprime entero
+    else:
+        tramos = [(duracion * f - largo / 2, largo) for f in (0.2, 0.5, 0.8)]
+
+    total_bytes = total_seg = 0.0
+    with tempfile.TemporaryDirectory(prefix="compresorfree_") as tmp:
+        for i, (inicio, seg) in enumerate(tramos):
+            if cancelar is not None and cancelar.is_set():
+                return None
+            muestra = os.path.join(tmp, f"muestra{i}.mp4")
+            proc = subprocess.run(
+                [ffmpeg, "-hide_banner", "-y", "-ss", f"{inicio:.3f}", "-i", entrada,
+                 "-t", f"{seg:.3f}", *_opciones_codificacion(cfg), muestra],
+                capture_output=True, creationflags=SIN_CONSOLA,
+            )
+            if proc.returncode != 0 or not os.path.exists(muestra):
+                continue
+            total_bytes += os.path.getsize(muestra)
+            total_seg += seg
+    if not total_seg:
+        return None
+    return int(total_bytes / total_seg * duracion)
+
+
 def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None):
     """Comprime `entrada` a MP4. Devuelve la ruta del archivo generado.
 
@@ -89,19 +140,8 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None)
     ffmpeg = buscar_ffmpeg()
     duracion = obtener_duracion(ffmpeg, entrada)
 
-    # Dimensiones pares (requisito de H.264/yuv420p) y limite de altura opcional.
-    if cfg["altura_max"]:
-        escala = f"scale=-2:'min({cfg['altura_max']},trunc(ih/2)*2)'"
-    else:
-        escala = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
-
     cmd = [
-        ffmpeg, "-hide_banner", "-y", "-i", entrada,
-        "-map", "0:v:0", "-map", "0:a:0?",
-        "-vf", escala,
-        "-c:v", "libx264", "-crf", str(cfg["crf"]), "-preset", cfg["preset"],
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", cfg["audio"], "-ac", "2",
+        ffmpeg, "-hide_banner", "-y", "-i", entrada, *_opciones_codificacion(cfg),
         "-movflags", "+faststart",
         "-progress", "pipe:1", "-nostats",
         salida,

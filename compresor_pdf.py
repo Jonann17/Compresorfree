@@ -8,6 +8,7 @@ import io
 import os
 import shutil
 import subprocess
+import tempfile
 
 from compresor_video import SIN_CONSOLA
 
@@ -129,3 +130,16 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None)
     if progreso:
         progreso(100.0)
     return salida
+
+
+def estimar(entrada, nivel="media", cancelar=None):
+    """Tamano final en bytes: comprime el PDF en un archivo temporal y lo mide."""
+    with tempfile.TemporaryDirectory(prefix="compresorfree_") as tmp:
+        try:
+            salida = comprimir(entrada, os.path.join(tmp, "estimado.pdf"), nivel,
+                               cancelar=cancelar)
+        except RuntimeError:
+            if cancelar is not None and cancelar.is_set():
+                return None
+            raise
+        return os.path.getsize(salida)

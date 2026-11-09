@@ -2,6 +2,13 @@
 
 App de escritorio para **Windows** y **macOS** que comprime videos (a MP4) y PDF.
 
+## Que hace
+- Comprime **varios archivos a la vez**: agregalos a la lista y se procesan uno tras otro,
+  con el estado de cada uno y una barra de progreso general.
+- **Peso estimado** antes de comprimir (boton *Estimar peso*): en videos comprime unos
+  segundos de muestra y extrapola; en PDF hace la compresion en un archivo temporal.
+- Guarda los resultados junto a cada original o en la carpeta que elijas.
+
 ## Descargar la app
 Ve a la pestana **Releases** del repositorio y descarga:
 - **Windows**: `Compresorfree-Windows.zip` -> descomprimir y abrir `Compresorfree.exe`.
@@ -58,10 +65,12 @@ Interfaz grafica para comprimir:
   si no, se usa pikepdf + Pillow. Si no hay FFmpeg en el sistema se usa el de `imageio-ffmpeg`.
 
 ### Uso
-- Interfaz grafica: `python app.py` -> elige "Video" o "PDF", el archivo y el nivel.
+- Interfaz grafica: `python app.py` -> elige "Video" o "PDF", agrega uno o varios archivos y el nivel.
 - Linea de comandos (el tipo se detecta por la extension):
   - `python app.py video.mkv -n alta -o salida.mp4`
   - `python app.py documento.pdf -n media`
+  - Varios a la vez: `python app.py video1.avi video2.mov video3.mkv -n media -d carpeta_salida`
+  - Solo ver el peso estimado: `python app.py video1.avi documento.pdf -n alta --estimar`
 
 ## Niveles
 | Nivel | Video                          | PDF (imagenes)                   |
