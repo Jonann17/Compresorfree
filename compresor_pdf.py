@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 
+import nucleo
 from compresor_video import SIN_CONSOLA
 
 NIVELES = {
@@ -105,8 +106,77 @@ def _comprimir_pikepdf(entrada, salida, cfg, progreso, cancelar):
         )
 
 
-def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None):
-    """Comprime un PDF. Devuelve la ruta del archivo generado."""
+def _importar_pikepdf():
+    try:
+        import pikepdf
+    except ImportError:
+        raise RuntimeError("Para comprimir PDF hace falta pikepdf:\n    pip install pikepdf pillow")
+    return pikepdf
+
+
+def _campos(pikepdf, campos, ft_heredado=None, vistos=None):
+    """Recorre el arbol de campos de formulario (con /Kids y /FT heredado)."""
+    vistos = set() if vistos is None else vistos
+    for campo in campos:
+        if not isinstance(campo, pikepdf.Dictionary):
+            continue
+        clave = campo.objgen if campo.is_indirect else id(campo)
+        if clave in vistos:
+            continue
+        vistos.add(clave)
+        ft = campo.get("/FT", ft_heredado)
+        yield campo, ft
+        yield from _campos(pikepdf, campo.get("/Kids", []), ft, vistos)
+
+
+def motivo_omision(entrada):
+    """Motivo por el que un PDF no debe tocarse, o None si se puede comprimir.
+
+    - Firmado o certificado: reescribirlo invalidaria la firma.
+    - Cifrado o con contrasena: no se quita su proteccion en silencio.
+    Ante la duda se omite (mejor no comprimir que alterar un documento)."""
+    pikepdf = _importar_pikepdf()
+    try:
+        pdf = pikepdf.open(entrada)
+    except pikepdf.PasswordError:
+        return "protegido con contrasena"
+    except pikepdf.PdfError:
+        return None  # PDF danado: el error real lo dara la compresion
+    with pdf:
+        if pdf.is_encrypted:
+            return "cifrado (no se quita su proteccion)"
+        firmado = "firmado digitalmente (comprimirlo invalidaria la firma)"
+        raiz = pdf.Root
+        if "/Perms" in raiz:
+            return firmado
+        formulario = raiz.get("/AcroForm")
+        if isinstance(formulario, pikepdf.Dictionary):
+            if int(formulario.get("/SigFlags", 0)) & 3:
+                return firmado
+            for campo, ft in _campos(pikepdf, formulario.get("/Fields", [])):
+                if ft == "/Sig" and "/V" in campo:
+                    return firmado
+        for obj in pdf.objects:
+            if isinstance(obj, pikepdf.Dictionary) and obj.get("/Type") == "/Sig":
+                return firmado
+    return None
+
+
+def _contar_paginas(ruta):
+    pikepdf = _importar_pikepdf()
+    with pikepdf.open(ruta) as pdf:
+        return len(pdf.pages)
+
+
+def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None,
+              si_existe="error"):
+    """Comprime un PDF. Devuelve la ruta del archivo generado.
+
+    si_existe: 'error' (no toca un destino existente y lanza DestinoExistente)
+               o 'renombrar' (guarda como "nombre (2).pdf", "(3)"...).
+    Lanza nucleo.ArchivoOmitido si el PDF esta firmado o cifrado.
+    Nunca sobrescribe nada: escribe en un temporal y lo publica al final.
+    """
     if nivel not in NIVELES:
         raise ValueError(f"Nivel invalido: {nivel}. Usa: {', '.join(NIVELES)}")
     if not os.path.isfile(entrada):
@@ -114,22 +184,37 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None)
 
     cfg = NIVELES[nivel]
     salida = salida or ruta_salida_por_defecto(entrada, nivel)
-    if os.path.abspath(salida) == os.path.abspath(entrada):
-        raise ValueError("El archivo de salida no puede ser el mismo que el de entrada.")
+    nucleo.comprobar_destino(entrada, salida, si_existe)
 
-    gs = buscar_ghostscript()
-    if gs:
-        _comprimir_ghostscript(gs, entrada, salida, cfg)
-    else:
-        _comprimir_pikepdf(entrada, salida, cfg, progreso, cancelar)
+    motivo = motivo_omision(entrada)
+    if motivo:
+        raise nucleo.ArchivoOmitido(f"Se omitio: PDF {motivo}.")
+    paginas = _contar_paginas(entrada)
 
-    # Si el PDF ya estaba optimizado y el resultado pesa mas, se conserva el original.
-    if os.path.getsize(salida) > os.path.getsize(entrada):
-        shutil.copyfile(entrada, salida)
+    with nucleo.salida_temporal(salida) as tmp:
+        gs = buscar_ghostscript()
+        if gs:
+            _comprimir_ghostscript(gs, entrada, tmp, cfg)
+        else:
+            _comprimir_pikepdf(entrada, tmp, cfg, progreso, cancelar)
+
+        # Si el PDF ya estaba optimizado y el resultado pesa mas, se conserva el original.
+        if os.path.getsize(tmp) > os.path.getsize(entrada):
+            shutil.copyfile(entrada, tmp)
+
+        try:
+            paginas_salida = _contar_paginas(tmp)
+        except Exception as e:
+            raise RuntimeError(f"El resultado no es un PDF valido: {e}")
+        if paginas_salida != paginas:
+            raise RuntimeError(
+                f"El resultado tiene {paginas_salida} paginas y el original {paginas}; "
+                "no se guardo.")
+        final = nucleo.finalizar(tmp, salida, si_existe)
 
     if progreso:
         progreso(100.0)
-    return salida
+    return final
 
 
 def estimar(entrada, nivel="media", cancelar=None):

@@ -16,6 +16,7 @@ import threading
 import actualizador
 import compresor_pdf
 import compresor_video
+import nucleo
 from compresor_video import resumen
 from version import VERSION
 
@@ -47,21 +48,11 @@ def tipo_por_extension(ruta):
 
 def rutas_salida(entradas, tipo, nivel, carpeta=None):
     """Ruta de salida para cada archivo: junto al original o en `carpeta`.
-    Si dos archivos terminarian con el mismo nombre, agrega (2), (3)..."""
+    Nunca coincide con una entrada del lote, con otra salida ni con un archivo
+    existente: ante conflicto agrega (2), (3)..."""
     modulo = TIPOS[tipo]["modulo"]
-    usadas, salidas = set(), []
-    for entrada in entradas:
-        salida = modulo.ruta_salida_por_defecto(entrada, nivel)
-        if carpeta:
-            salida = os.path.join(carpeta, os.path.basename(salida))
-        base, ext = os.path.splitext(salida)
-        n = 2
-        while os.path.normcase(os.path.abspath(salida)) in usadas:
-            salida = f"{base} ({n}){ext}"
-            n += 1
-        usadas.add(os.path.normcase(os.path.abspath(salida)))
-        salidas.append(salida)
-    return salidas
+    return nucleo.planificar_lote(
+        entradas, lambda e: modulo.ruta_salida_por_defecto(e, nivel), carpeta)
 
 
 # ---------------------------------------------------------------- Interfaz grafica
@@ -216,7 +207,7 @@ def iniciar_gui():
             w.config(state="disabled" if si else "normal")
         btn_cancelar.config(state="normal" if si else "disabled")
 
-    def al_terminar(resultados, cancelado):
+    def al_terminar(resultados, omitidos, cancelado):
         bloquear(False)
         ok = [(e, s) for e, s, err in resultados if not err]
         fallidos = [(e, err) for e, s, err in resultados if err]
@@ -231,6 +222,9 @@ def iniciar_gui():
         if fallidos:
             texto += "\n\nCon error:\n" + "\n".join(
                 f"- {os.path.basename(e)}: {err.splitlines()[0]}" for e, err in fallidos[:10])
+        if omitidos:
+            texto += "\n\nOmitidos (el original queda intacto):\n" + "\n".join(
+                f"- {os.path.basename(e)}: {motivo}" for e, motivo in omitidos[:10])
         if cancelado:
             var_estado.set("Cancelado.")
             messagebox.showwarning("Compresion cancelada", texto)
@@ -258,7 +252,7 @@ def iniciar_gui():
             poner_estado_fila(f, "Pendiente")
 
         def trabajo():
-            resultados = []
+            resultados, omitidos = [], []
             for i, (fila, entrada, salida) in enumerate(zip(filas, entradas, salidas)):
                 if cancelar.is_set():
                     break
@@ -272,11 +266,15 @@ def iniciar_gui():
 
                 progreso(0)
                 try:
-                    out = modulo.comprimir(entrada, salida, nivel, progreso, cancelar)
+                    out = modulo.comprimir(entrada, salida, nivel, progreso, cancelar,
+                                           si_existe="renombrar")
                     antes, despues = os.path.getsize(entrada), os.path.getsize(out)
                     red = (1 - despues / antes) * 100 if antes else 0
                     en_ui(poner_estado_fila, fila, f"Listo (-{red:.0f}%)")
                     resultados.append((entrada, out, None))
+                except nucleo.ArchivoOmitido as e:
+                    en_ui(poner_estado_fila, fila, "Omitido")
+                    omitidos.append((entrada, str(e)))
                 except Exception as e:
                     msg = str(e)
                     if cancelar.is_set():
@@ -284,7 +282,7 @@ def iniciar_gui():
                         break
                     en_ui(poner_estado_fila, fila, "Error")
                     resultados.append((entrada, None, msg))
-            en_ui(al_terminar, resultados, cancelar.is_set())
+            en_ui(al_terminar, resultados, omitidos, cancelar.is_set())
 
         threading.Thread(target=trabajo, daemon=True).start()
 
@@ -318,11 +316,16 @@ def iniciar_gui():
                 en_ui(lambda i=i, ruta=ruta, fila=fila: (
                     lista.set(fila, "estimado", "calculando..."),
                     var_estado.set(f"Estimando {i + 1} de {len(filas)}: {os.path.basename(ruta)}")))
+                omitido = False
                 try:
                     bytes_ = modulo.estimar(ruta, nivel, cancelar)
+                except nucleo.ArchivoOmitido:
+                    bytes_, omitido = None, True
                 except Exception:
                     bytes_ = None
-                if bytes_ is None:
+                if omitido:
+                    texto = "omitido"
+                elif bytes_ is None:
                     texto = "" if cancelar.is_set() else "?"
                 else:
                     antes += os.path.getsize(ruta)
@@ -446,6 +449,9 @@ def main():
             modulo = TIPOS[tipo_por_extension(entrada)]["modulo"]
             try:
                 bytes_ = modulo.estimar(entrada, args.nivel)
+            except nucleo.ArchivoOmitido as e:
+                print(f"{entrada}: {e}", file=sys.stderr)
+                continue
             except Exception as e:
                 print(f"{entrada}: error ({e})", file=sys.stderr)
                 continue
@@ -453,6 +459,10 @@ def main():
             print(f"{entrada}: {compresor_video.tamano_legible(os.path.getsize(entrada))}"
                   f" -> {estimado} (nivel {args.nivel})")
         return
+    if args.salida and os.path.lexists(args.salida):
+        print(f"Error: {args.salida} ya existe; no se sobrescribe. Elige otro nombre.",
+              file=sys.stderr)
+        sys.exit(1)
     if args.carpeta:
         os.makedirs(args.carpeta, exist_ok=True)
 
@@ -460,25 +470,38 @@ def main():
         llenos = int(p / 2.5)
         print(f"\r[{'#' * llenos}{'.' * (40 - llenos)}] {p:5.1f}%", end="", flush=True)
 
-    errores = 0
+    errores = omitidos = 0
     total = len(args.entradas)
-    for i, entrada in enumerate(args.entradas, 1):
-        tipo = tipo_por_extension(entrada)
-        salida = args.salida or rutas_salida([entrada], tipo, args.nivel, args.carpeta)[0]
+    # Se planifica todo el lote junto: ninguna salida puede caer sobre otra entrada.
+    if args.salida:
+        planes = [(args.entradas[0], args.salida, "error")]
+    else:
+        salidas = nucleo.planificar_lote(
+            args.entradas,
+            lambda e: TIPOS[tipo_por_extension(e)]["modulo"].ruta_salida_por_defecto(e, args.nivel),
+            args.carpeta)
+        planes = [(e, s, "renombrar") for e, s in zip(args.entradas, salidas)]
+    for i, (entrada, salida, si_existe) in enumerate(planes, 1):
+        modulo = TIPOS[tipo_por_extension(entrada)]["modulo"]
         if total > 1:
             print(f"[{i}/{total}] {entrada}")
         try:
-            salida = TIPOS[tipo]["modulo"].comprimir(entrada, salida, args.nivel, barra)
+            salida = modulo.comprimir(entrada, salida, args.nivel, barra, si_existe=si_existe)
         except KeyboardInterrupt:
             print("\nCancelado.")
             sys.exit(1)
+        except nucleo.ArchivoOmitido as e:
+            print(f"\n{e} El original queda intacto.", file=sys.stderr)
+            omitidos += 1
+            continue
         except Exception as e:
             print(f"\nError: {e}", file=sys.stderr)
             errores += 1
             continue
         print(f"\nListo: {salida}\n{resumen(entrada, salida)}\n")
-    if errores:
-        print(f"{errores} de {total} archivo(s) con error.", file=sys.stderr)
+    if errores or omitidos:
+        print(f"{errores} con error y {omitidos} omitido(s) de {total} archivo(s).",
+              file=sys.stderr)
         sys.exit(1)
 
 if __name__ == "__main__":
