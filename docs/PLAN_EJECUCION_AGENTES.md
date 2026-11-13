@@ -145,4 +145,11 @@ PR1-C, PR2 y PR3-B/C quedan en orden secuencial en cualquier opción.
 4. **Arranque:** ¿empiezo el PR1-B con el perfil y la opción de ramas elegidos?
 5. Recordatorio pendiente: la **Fase 0** (2FA, proteger `main`, releases inmutables) sigue siendo necesaria antes de la v1.2.0.
 
-ESTADO: PROPUESTA DE EJECUCIÓN — ESPERANDO ELECCIÓN DEL PROPIETARIO
+## 10. Decisiones del propietario (2026-11-13)
+
+- **Perfil:** B, equilibrado.
+- **Ramas:** opción 2, apilado: PR1-B parte de `feature/seguridad-destinos` (PR1-A).
+- **Fable:** no disponible por ahora. **Antes de cualquier tarea asignada a Fable (PR3-A, PR3-B, PR3-C), Claude vuelve a preguntar** qué modelo usar.
+- ChatGPT no revisa este plan de ejecución.
+
+ESTADO: APROBADO — EJECUTANDO PR1-B
