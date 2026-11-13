@@ -35,7 +35,7 @@ jobs:
 
       - name: Instalar xvfb (pantalla virtual para las pruebas de la GUI)
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
 
       - name: Pruebas
         if: runner.os == 'Linux'

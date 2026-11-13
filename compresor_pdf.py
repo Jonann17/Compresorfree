@@ -42,7 +42,11 @@ def _comando_ghostscript(gs, entrada, salida, cfg):
 
 
 def _comprimir_ghostscript(gs, entrada, salida, cfg, cancelar=None):
-    r = procesos.ejecutar(_comando_ghostscript(gs, entrada, salida, cfg), cancelar)
+    # Ghostscript deja archivos gs_* de cientos de MB en TEMP si se le corta a
+    # mitad; se le da una carpeta propia que se borra siempre, tambien al cancelar.
+    with tempfile.TemporaryDirectory(prefix="compresorfree_gs_") as tmp:
+        env = dict(os.environ, TMPDIR=tmp, TEMP=tmp, TMP=tmp)
+        r = procesos.ejecutar(_comando_ghostscript(gs, entrada, salida, cfg), cancelar, env=env)
     if r.returncode != 0:
         raise RuntimeError(f"Ghostscript fallo:\n{r.stderr[-1500:]}")
 

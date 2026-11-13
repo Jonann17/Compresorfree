@@ -253,3 +253,10 @@ def test_windows_matar_al_padre_a_la_fuerza_mata_al_hijo(tmp_path):
             padre.kill()
         if pid:
             subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+
+
+def test_env_se_pasa_al_hijo():
+    env = dict(os.environ, COMPRESORFREE_PRUEBA="hola")
+    r = procesos.ejecutar([sys.executable, "-c",
+                           "import os; print(os.environ.get('COMPRESORFREE_PRUEBA'))"], env=env)
+    assert r.stdout.strip() == "hola"

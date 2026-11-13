@@ -152,6 +152,7 @@ def test_cancelar_a_mitad_de_la_codificacion(tmp_path):
 def test_estimar_cancelado_devuelve_none_rapido(tmp_path):
     import procesos
     entrada = generar_video(str(tmp_path / "largo.avi"), 20, "640x480")
+    assert compresor_video.estimar(entrada, "media") > 0  # sin cancelar si estima
     cancelar = threading.Event()
     marca = []
 
@@ -164,5 +165,5 @@ def test_estimar_cancelado_devuelve_none_rapido(tmp_path):
     assert compresor_video.estimar(entrada, "media", cancelar) is None
     fin = time.monotonic()
     timer.join()
-    assert marca and fin - marca[0] < 2
+    assert marca and 0 <= fin - marca[0] < 2
     assert procesos.procesos_vivos() == []

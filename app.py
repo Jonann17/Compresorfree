@@ -389,6 +389,13 @@ def iniciar_gui():
 
     def ofrecer_actualizacion(info, manual):
         btn_actualizar.config(state="normal")
+        if cerrando or (info is not None and tarea_en_curso()):
+            # No se interrumpe una compresion: se ofrecera al volver a abrir la app.
+            if manual and not cerrando:
+                messagebox.showinfo("Actualizaciones",
+                                    "Hay una version nueva. Termina o cancela la tarea en curso "
+                                    "y vuelve a buscar actualizaciones.")
+            return
         if info is None:
             if manual:
                 messagebox.showinfo("Actualizaciones", f"Ya tienes la ultima version ({VERSION}).")
@@ -459,17 +466,24 @@ def iniciar_gui():
 
     def al_cerrar():
         nonlocal cerrando
-        if cerrando:
+        if cerrando or dialogo_cierre[0]:
             return
         if not tarea_en_curso():
             ventana.destroy()
             return
-        if not messagebox.askyesno("Tarea en curso",
-                                   "Hay una compresion en curso. ¿Cancelarla y salir?"):
+        dialogo_cierre[0] = True
+        try:
+            salir = messagebox.askyesno("Tarea en curso",
+                                        "Hay una tarea en curso. ¿Cancelarla y salir?")
+        finally:
+            dialogo_cierre[0] = False
+        if not salir:
+            return
+        if not tarea_en_curso():  # termino mientras el dialogo estaba abierto
+            ventana.destroy()
             return
         cerrando = True
-        cancelar.set()
-        procesos.terminar_todos()
+        cancelar_tarea()
         var_estado.set("Cancelando...")
         bloquear(True)
         btn_cancelar.config(state="disabled")
@@ -485,7 +499,11 @@ def iniciar_gui():
             procesos.terminar_todos()
         ventana.destroy()
 
+    dialogo_cierre = [False]
     ventana.protocol("WM_DELETE_WINDOW", al_cerrar)
+    if sys.platform == "darwin":
+        # Cmd+Q y "Salir" del Dock no pasan por WM_DELETE_WINDOW en macOS.
+        ventana.createcommand("::tk::mac::Quit", al_cerrar)
     ventana.after(50, vaciar_cola_ui)
     ventana.after(1500, buscar_actualizacion)  # busca en silencio al abrir la app
     ventana.mainloop()

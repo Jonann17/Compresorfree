@@ -49,16 +49,17 @@ def _comprobar(cancelar):
 
 
 def ejecutar(cmd, cancelar=None, on_stdout_linea=None, max_lineas=200,
-             timeout_terminar=3.0, intervalo=0.2):
+             timeout_terminar=3.0, intervalo=0.2, env=None):
     """Ejecuta `cmd` y devuelve un Resultado (no lanza por returncode != 0).
 
     on_stdout_linea: se llama en este mismo hilo con cada linea de stdout
     (sin el salto final); entonces Resultado.stdout queda vacio.
+    env: variables de entorno del hijo (None = las del proceso actual).
     Lanza Cancelado si `cancelar` se activa; el proceso se termina antes."""
     _comprobar(cancelar)
     proc = subprocess.Popen(
         cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace", creationflags=SIN_CONSOLA,
+        text=True, encoding="utf-8", errors="replace", creationflags=SIN_CONSOLA, env=env,
     )
     with _lock:
         _registro.add(proc)
@@ -213,6 +214,8 @@ if sys.platform == "win32":
     _kernel32.SetInformationJobObject.restype = wintypes.BOOL
     _kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
     _kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _kernel32.CloseHandle.restype = wintypes.BOOL
 
     _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
     _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
@@ -254,5 +257,7 @@ if sys.platform == "win32":
         if not _kernel32.SetInformationJobObject(
                 job, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
                 ctypes.byref(info), ctypes.sizeof(info)):
-            raise ctypes.WinError(ctypes.get_last_error())
+            error = ctypes.get_last_error()
+            _kernel32.CloseHandle(job)
+            raise ctypes.WinError(error)
         return job

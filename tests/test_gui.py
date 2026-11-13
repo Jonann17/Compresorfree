@@ -31,7 +31,12 @@ def _widgets(widget):
         yield from _widgets(w)
 
 
-def test_cerrar_con_si_durante_la_compresion_no_deja_nada(tmp_path, monkeypatch):
+@pytest.mark.parametrize("con_actualizacion", [False, True],
+                         ids=["cierre", "actualizacion_durante_la_compresion"])
+def test_cerrar_con_si_durante_la_compresion_no_deja_nada(tmp_path, monkeypatch,
+                                                         con_actualizacion):
+    """Con con_actualizacion, la busqueda automatica encuentra una version nueva en
+    plena compresion: no debe ofrecerse ni instalarse (cerraria la app a medias)."""
     import tkinter
     from tkinter import filedialog, messagebox
 
@@ -41,8 +46,17 @@ def test_cerrar_con_si_durante_la_compresion_no_deja_nada(tmp_path, monkeypatch)
 
     video = generar_video(str(tmp_path / "largo.avi"), 30, "960x540")
     monkeypatch.setattr(filedialog, "askopenfilenames", lambda *a, **k: (video,))
-    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
-    monkeypatch.setattr(actualizador, "buscar_actualizacion", lambda: None)
+    preguntas, descargas = [], []
+    monkeypatch.setattr(messagebox, "askyesno", lambda titulo, *a, **k: preguntas.append(titulo) or True)
+    if con_actualizacion:
+        monkeypatch.setattr(actualizador, "buscar_actualizacion",
+                            lambda: {"version": "9.9.9", "url": "http://x/a.zip", "notas": ""})
+        monkeypatch.setattr(actualizador, "es_app_compilada", lambda: True)
+        monkeypatch.setattr(actualizador, "descargar", lambda *a, **k: descargas.append(a))
+        monkeypatch.setattr(actualizador, "instalar", lambda *a, **k: descargas.append(a))
+    else:
+        monkeypatch.setattr(actualizador, "buscar_actualizacion", lambda: None)
+    cierre = []
 
     guardados, errores = [], []
     original = tkinter.Tk.mainloop
@@ -74,7 +88,10 @@ def test_cerrar_con_si_durante_la_compresion_no_deja_nada(tmp_path, monkeypatch)
                 for p in procesos.procesos_vivos():
                     if p not in guardados:
                         guardados.append(p)
-                if any("-progress" in map(str, p.args) for p in guardados):
+                codificando = any("-progress" in map(str, p.args) for p in guardados)
+                # Con actualizacion se espera a que la busqueda automatica (1,5 s) responda.
+                if codificando and (not con_actualizacion or time.monotonic() > inicio + 3):
+                    cierre.append(time.monotonic())
                     manejador = ventana.protocol("WM_DELETE_WINDOW")
                     ventana.tk.call(manejador)
                 elif time.monotonic() > limite:
@@ -84,6 +101,7 @@ def test_cerrar_con_si_durante_la_compresion_no_deja_nada(tmp_path, monkeypatch)
             except Exception as e:  # noqa: BLE001
                 falla(e)
 
+        inicio = time.monotonic()
         ventana.after(500, pulsar)
         original(ventana, n)
 
@@ -97,6 +115,9 @@ def test_cerrar_con_si_durante_la_compresion_no_deja_nada(tmp_path, monkeypatch)
 
     assert errores == []
     assert guardados, "no se vio ningun proceso hijo"
+    assert cierre and time.monotonic() - cierre[0] < 10, "el cierre no debe llegar al tope de 15 s"
+    assert preguntas == ["Tarea en curso"], preguntas
+    assert descargas == [], "no debe instalarse una actualizacion en plena compresion"
     limite = time.monotonic() + 5
     while time.monotonic() < limite and any(p.poll() is None for p in guardados):
         time.sleep(0.1)
