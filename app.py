@@ -9,14 +9,18 @@ Uso:
 """
 
 import argparse
+import contextlib
 import os
+import queue
 import sys
 import threading
+import time
 
 import actualizador
 import compresor_pdf
 import compresor_video
 import nucleo
+import procesos
 from compresor_video import resumen
 from version import VERSION
 
@@ -71,12 +75,42 @@ def iniciar_gui():
     var_estado = tk.StringVar(value="Elige el tipo de archivo y agrega uno o varios.")
     cancelar = threading.Event()
     archivos = {}  # id de fila de la lista -> ruta completa
+    cola_ui = queue.Queue()
+    hilo_tarea = None  # hilo de compresion o estimacion en curso
+    cerrando = False
 
     marco = ttk.Frame(ventana, padding=12)
     marco.grid()
 
     def en_ui(funcion, *args):
-        ventana.after(0, lambda: funcion(*args))
+        # Los hilos de trabajo nunca tocan Tk: encolan y el hilo principal ejecuta.
+        cola_ui.put((funcion, args))
+
+    def vaciar_cola_ui():
+        try:
+            while True:
+                try:
+                    funcion, args = cola_ui.get_nowait()
+                except queue.Empty:
+                    break
+                if not cerrando:
+                    funcion(*args)
+        finally:
+            with contextlib.suppress(tk.TclError):  # la ventana ya se destruyo
+                ventana.after(50, vaciar_cola_ui)
+
+    def tarea_en_curso():
+        return hilo_tarea is not None and hilo_tarea.is_alive()
+
+    def lanzar_tarea(trabajo):
+        nonlocal hilo_tarea
+        # No es daemon: al salir se espera a que termine y limpie sus temporales.
+        hilo_tarea = threading.Thread(target=trabajo, daemon=False)
+        hilo_tarea.start()
+
+    def cancelar_tarea():
+        cancelar.set()
+        threading.Thread(target=procesos.terminar_todos, daemon=True).start()
 
     def poner_estado_fila(fila, texto):
         lista.set(fila, "estado", texto)
@@ -194,7 +228,7 @@ def iniciar_gui():
     botones.grid(row=8, column=0, columnspan=2, sticky="e")
     btn_comprimir = ttk.Button(botones, text="Comprimir")
     btn_cancelar = ttk.Button(botones, text="Cancelar", state="disabled",
-                              command=cancelar.set)
+                              command=cancelar_tarea)
     btn_comprimir.pack(side="left", padx=4)
     btn_cancelar.pack(side="left")
 
@@ -284,7 +318,7 @@ def iniciar_gui():
                     resultados.append((entrada, None, msg))
             en_ui(al_terminar, resultados, omitidos, cancelar.is_set())
 
-        threading.Thread(target=trabajo, daemon=True).start()
+        lanzar_tarea(trabajo)
 
     btn_comprimir.config(command=iniciar)
 
@@ -347,7 +381,7 @@ def iniciar_gui():
                     var_estado.set("No se pudo estimar el peso.")
             en_ui(fin)
 
-        threading.Thread(target=trabajo, daemon=True).start()
+        lanzar_tarea(trabajo)
 
     btn_estimar.config(command=estimar)
 
@@ -420,8 +454,45 @@ def iniciar_gui():
         threading.Thread(target=trabajo, daemon=True).start()
 
     btn_actualizar.config(command=lambda: buscar_actualizacion(manual=True))
+
+    # ------------------------------------------------------------ Cierre de la ventana
+
+    def al_cerrar():
+        nonlocal cerrando
+        if cerrando:
+            return
+        if not tarea_en_curso():
+            ventana.destroy()
+            return
+        if not messagebox.askyesno("Tarea en curso",
+                                   "Hay una compresion en curso. ¿Cancelarla y salir?"):
+            return
+        cerrando = True
+        cancelar.set()
+        procesos.terminar_todos()
+        var_estado.set("Cancelando...")
+        bloquear(True)
+        btn_cancelar.config(state="disabled")
+        esperar_y_cerrar(time.monotonic() + 15)
+
+    def esperar_y_cerrar(limite):
+        if tarea_en_curso() and time.monotonic() < limite:
+            ventana.after(100, esperar_y_cerrar, limite)
+            return
+        if tarea_en_curso():
+            # Algo no interrumpible (p. ej. pdf.save): se cierra igual; el hilo
+            # termina solo y no publica nada porque `cancelar` esta activo.
+            procesos.terminar_todos()
+        ventana.destroy()
+
+    ventana.protocol("WM_DELETE_WINDOW", al_cerrar)
+    ventana.after(50, vaciar_cola_ui)
     ventana.after(1500, buscar_actualizacion)  # busca en silencio al abrir la app
     ventana.mainloop()
+    if hilo_tarea is not None:
+        # Se espera aqui (y no en el cierre del interprete) para que los objetos de
+        # Tk que usa el hilo se liberen en el hilo principal.
+        hilo_tarea.join()
 
 
 # ---------------------------------------------------------------- Linea de comandos
@@ -449,6 +520,10 @@ def main():
             modulo = TIPOS[tipo_por_extension(entrada)]["modulo"]
             try:
                 bytes_ = modulo.estimar(entrada, args.nivel)
+            except KeyboardInterrupt:
+                procesos.terminar_todos()
+                print("\nCancelado.")
+                sys.exit(1)
             except nucleo.ArchivoOmitido as e:
                 print(f"{entrada}: {e}", file=sys.stderr)
                 continue
@@ -488,6 +563,7 @@ def main():
         try:
             salida = modulo.comprimir(entrada, salida, args.nivel, barra, si_existe=si_existe)
         except KeyboardInterrupt:
+            procesos.terminar_todos()
             print("\nCancelado.")
             sys.exit(1)
         except nucleo.ArchivoOmitido as e:
