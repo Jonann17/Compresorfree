@@ -1,5 +1,8 @@
 """PDF: publicacion segura y barrera para PDF firmados o cifrados."""
 import os
+import sys
+import threading
+import time
 
 import pikepdf
 import pytest
@@ -89,3 +92,41 @@ def test_pdf_especiales_se_omiten_sin_tocar(pdf_fotos, tmp_path, caso):
         compresor_pdf.comprimir(entrada, salida, "media")
     assert leer(entrada) == original
     assert not os.path.exists(salida) and temporales(tmp_path) == []
+
+
+def test_ghostscript_cancelable_con_comando_lento(pdf_fotos, tmp_path, monkeypatch):
+    """Ghostscript (sustituido por un hijo lento) se cancela en < 2 s sin dejar nada."""
+    import procesos
+    monkeypatch.setattr(compresor_pdf, "buscar_ghostscript", lambda: "gs-falso")
+    monkeypatch.setattr(compresor_pdf, "_comando_ghostscript",
+                        lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(30)"])
+    salida = str(tmp_path / "out.pdf")
+    cancelar = threading.Event()
+    marca = []
+
+    def disparar():
+        marca.append(time.monotonic())
+        cancelar.set()
+
+    timer = threading.Timer(0.5, disparar)
+    timer.start()
+    with pytest.raises(RuntimeError):
+        compresor_pdf.comprimir(pdf_fotos, salida, "media", cancelar=cancelar)
+    fin = time.monotonic()
+    timer.join()
+    assert fin - marca[0] < 2
+    assert not os.path.exists(salida)
+    assert temporales(tmp_path) == []
+    assert procesos.procesos_vivos() == []
+
+
+def test_pikepdf_cancelado_no_deja_salida(pdf_fotos, tmp_path, monkeypatch):
+    import procesos
+    monkeypatch.setattr(compresor_pdf, "buscar_ghostscript", lambda: None)
+    salida = str(tmp_path / "out.pdf")
+    cancelar = threading.Event()
+    with pytest.raises(procesos.Cancelado):
+        compresor_pdf.comprimir(pdf_fotos, salida, "media",
+                                progreso=lambda p: cancelar.set(), cancelar=cancelar)
+    assert not os.path.exists(salida)
+    assert temporales(tmp_path) == []
