@@ -20,6 +20,11 @@ App de escritorio para **Windows** y **macOS** que comprime videos (a MP4) y PDF
   paginas) y solo entonces aparece con su nombre. Ante un error o una cancelacion, el temporal
   se borra.
 - Si el disco no permite guardar sin riesgo de pisar archivos, la app avisa y no guarda.
+- **Cancelar detiene FFmpeg y Ghostscript en el acto.** Si cierras la ventana con una
+  compresion en curso, la app pregunta; al aceptar, cancela, espera a que se limpien los
+  temporales y se cierra sin dejar procesos ni archivos a medias. En Windows, aunque la app
+  se cierre a la fuerza (Administrador de tareas), el sistema termina tambien FFmpeg y
+  Ghostscript. En Linux/macOS eso no esta garantizado si la app muere con `kill -9`.
 - **PDF firmados digitalmente o cifrados se omiten** (estado *Omitido*): comprimirlos
   invalidaria la firma o quitaria su proteccion. El original queda intacto.
 
