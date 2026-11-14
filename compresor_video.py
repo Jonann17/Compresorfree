@@ -172,6 +172,8 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None,
 
     ffmpeg = buscar_ffmpeg()
     duracion = obtener_duracion(ffmpeg, entrada, cancelar)
+    # Sin cota segura del tamano de salida: solo un aviso temprano.
+    nucleo.comprobar_espacio(os.path.dirname(os.path.abspath(salida)), nucleo.MARGEN_ESPACIO)
 
     with nucleo.salida_temporal(salida) as tmp:
         _codificar(ffmpeg, entrada, tmp, cfg, duracion, progreso, cancelar)
@@ -202,6 +204,8 @@ def _codificar(ffmpeg, entrada, salida, cfg, duracion, progreso, cancelar):
 
     r = procesos.ejecutar(cmd, cancelar, on_stdout_linea=linea_progreso)
     if r.returncode != 0:
+        if "No space left on device" in r.stderr:
+            raise nucleo.EspacioInsuficiente(nucleo.MENSAJE_DISCO_LLENO)
         detalle = "\n".join(r.stderr.splitlines()[-15:])
         raise RuntimeError(f"FFmpeg fallo (codigo {r.returncode}):\n{detalle}")
 
@@ -217,6 +221,8 @@ def tamano_legible(nbytes):
 def resumen(entrada, salida):
     antes, despues = os.path.getsize(entrada), os.path.getsize(salida)
     reduccion = (1 - despues / antes) * 100 if antes else 0
+    cambio = (f"Reduccion:  {reduccion:.1f}%" if reduccion >= 0
+              else f"Aumento:    {-reduccion:.1f}%")
     return (f"Original:   {tamano_legible(antes)}\n"
             f"Comprimido: {tamano_legible(despues)}\n"
-            f"Reduccion:  {reduccion:.1f}%")
+            f"{cambio}")
