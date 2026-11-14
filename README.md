@@ -20,6 +20,9 @@ App de escritorio para **Windows** y **macOS** que comprime videos (a MP4) y PDF
   paginas) y solo entonces aparece con su nombre. Ante un error o una cancelacion, el temporal
   se borra.
 - Si el disco no permite guardar sin riesgo de pisar archivos, la app avisa y no guarda.
+- **Antes de comprimir se comprueba el espacio libre** del destino (el archivo mas un margen
+  de 50 MB). Si falta, aparece "No hay espacio suficiente en ..." y no se crea nada; si el
+  disco se llena durante la compresion, tampoco queda un archivo a medias.
 - **Cancelar detiene FFmpeg y Ghostscript en el acto.** Si cierras la ventana con una
   compresion en curso, la app pregunta; al aceptar, cancela, espera a que se limpien los
   temporales y se cierra sin dejar procesos ni archivos a medias. En Windows, aunque la app
@@ -90,7 +93,10 @@ Interfaz grafica para comprimir:
   - `python app.py documento.pdf -n media`
   - Varios a la vez: `python app.py video1.avi video2.mov video3.mkv -n media -d carpeta_salida`
   - Solo ver el peso estimado: `python app.py video1.avi documento.pdf -n alta --estimar`
-  - Codigo de salida: `0` si todo se comprimio; `1` si algun archivo dio error o se omitio.
+  - Solo se aceptan videos (avi, mkv, mov, mp4...) y PDF: un archivo de otro formato
+    (por ejemplo `.jpg`) da el aviso "formato no soportado", cuenta como error y el resto sigue.
+  - Codigo de salida: `0` si todo se comprimio; `1` si algun archivo dio error, se omitio
+    o no es un formato soportado.
 
 ### Pruebas
 ```bash

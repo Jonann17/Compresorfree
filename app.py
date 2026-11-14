@@ -47,7 +47,23 @@ DESCRIPCION_NIVELES = {
 
 
 def tipo_por_extension(ruta):
-    return "pdf" if ruta.lower().endswith(".pdf") else "video"
+    """'pdf', 'video' o None si la extension no es compatible."""
+    ext = os.path.splitext(ruta)[1].lower()
+    if ext == ".pdf":
+        return "pdf"
+    if ext in {e.lstrip("*").lower() for e in compresor_video.EXTENSIONES_VIDEO.split()}:
+        return "video"
+    return None
+
+
+def texto_resultado(antes, despues):
+    """Estado de la fila al terminar: 'Listo (-59%)', '(+12%)' o '(sin cambio)'."""
+    if not antes:
+        return "Listo"
+    red = (1 - despues / antes) * 100
+    if abs(red) < 0.5:
+        return "Listo (sin cambio)"
+    return f"Listo (-{red:.0f}%)" if red > 0 else f"Listo (+{-red:.0f}%)"
 
 
 def rutas_salida(entradas, tipo, nivel, carpeta=None):
@@ -303,8 +319,7 @@ def iniciar_gui():
                     out = modulo.comprimir(entrada, salida, nivel, progreso, cancelar,
                                            si_existe="renombrar")
                     antes, despues = os.path.getsize(entrada), os.path.getsize(out)
-                    red = (1 - despues / antes) * 100 if antes else 0
-                    en_ui(poner_estado_fila, fila, f"Listo (-{red:.0f}%)")
+                    en_ui(poner_estado_fila, fila, texto_resultado(antes, despues))
                     resultados.append((entrada, out, None))
                 except nucleo.ArchivoOmitido as e:
                     en_ui(poner_estado_fila, fila, "Omitido")
@@ -533,8 +548,19 @@ def main():
         return
     if args.salida and len(args.entradas) > 1:
         parser.error("-o/--salida solo se puede usar con un archivo; usa -d/--carpeta")
+    total = len(args.entradas)
+    entradas = []
+    no_soportados = 0
+    for entrada in args.entradas:
+        if tipo_por_extension(entrada) is None:
+            ext = os.path.splitext(entrada)[1]
+            print(f"{entrada}: formato no soportado ({ext or 'sin extension'}). "
+                  "Formatos: video (avi, mkv, mov, ...) y PDF.", file=sys.stderr)
+            no_soportados += 1
+        else:
+            entradas.append(entrada)
     if args.estimar:
-        for entrada in args.entradas:
+        for entrada in entradas:
             modulo = TIPOS[tipo_por_extension(entrada)]["modulo"]
             try:
                 bytes_ = modulo.estimar(entrada, args.nivel)
@@ -551,6 +577,8 @@ def main():
             estimado = "?" if bytes_ is None else "~" + compresor_video.tamano_legible(bytes_)
             print(f"{entrada}: {compresor_video.tamano_legible(os.path.getsize(entrada))}"
                   f" -> {estimado} (nivel {args.nivel})")
+        if no_soportados:
+            sys.exit(1)
         return
     if args.salida and os.path.lexists(args.salida):
         print(f"Error: {args.salida} ya existe; no se sobrescribe. Elige otro nombre.",
@@ -563,17 +591,16 @@ def main():
         llenos = int(p / 2.5)
         print(f"\r[{'#' * llenos}{'.' * (40 - llenos)}] {p:5.1f}%", end="", flush=True)
 
-    errores = omitidos = 0
-    total = len(args.entradas)
+    errores, omitidos = no_soportados, 0
     # Se planifica todo el lote junto: ninguna salida puede caer sobre otra entrada.
     if args.salida:
-        planes = [(args.entradas[0], args.salida, "error")]
+        planes = [(e, args.salida, "error") for e in entradas]
     else:
         salidas = nucleo.planificar_lote(
-            args.entradas,
+            entradas,
             lambda e: TIPOS[tipo_por_extension(e)]["modulo"].ruta_salida_por_defecto(e, args.nivel),
             args.carpeta)
-        planes = [(e, s, "renombrar") for e, s in zip(args.entradas, salidas)]
+        planes = [(e, s, "renombrar") for e, s in zip(entradas, salidas)]
     for i, (entrada, salida, si_existe) in enumerate(planes, 1):
         modulo = TIPOS[tipo_por_extension(entrada)]["modulo"]
         if total > 1:
