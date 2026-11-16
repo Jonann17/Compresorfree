@@ -96,7 +96,14 @@ def test_job_version_primero_y_valida_con_regex(wf, texto):
     assert next(iter(wf["jobs"])) == "version"
     assert "outputs" in wf["jobs"]["version"]
     assert {"version", "publicar"} <= set(wf["jobs"]["version"]["outputs"])
-    assert r"^v?[0-9]+\.[0-9]+\.[0-9]+$" in texto
+    # La validacion se comprueba ejecutando el script real del paso, no buscando texto.
+    paso = next(p for p in wf["jobs"]["version"]["steps"] if p.get("id") == "validar")
+    assert paso.get("shell") == "python"
+    for pedida, esperado in [("v1.2.3", "1.2.3"), ("1.2.3", "1.2.3"), ("", "0.0.0-dev")]:
+        assert _validar_version(paso["run"], pedida) == esperado
+    for mala in ["1.2", "v1.2.3.4", "01.2.3", "1.2.3\nx=1", "1.2.3;rm -rf /", "$(id)",
+                 "1.2.3-rc1", "\u0661.2.3", " 1.2.3"]:
+        assert _validar_version(paso["run"], mala) is None, mala
 
 
 def test_version_py_se_genera_con_python(texto):
@@ -153,3 +160,20 @@ def test_nombres_heredados_no_aparecen_en_workflows_ni_en_py_de_la_app():
             contenido = f.read()
         for nombre in HEREDADOS:
             assert nombre not in contenido, f"{nombre} en {os.path.relpath(ruta, RAIZ)}"
+
+
+def _validar_version(script, pedida):
+    """Ejecuta el script del paso 'validar' como en GitHub Actions; None si falla."""
+    import subprocess
+    import sys
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        salida = os.path.join(tmp, "salida")
+        open(salida, "w").close()
+        env = dict(os.environ, ES_TAG="false", NOMBRE_REF="", VERSION_MANUAL=pedida,
+                   GITHUB_OUTPUT=salida)
+        r = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True)
+        if r.returncode != 0:
+            return None
+        valores = dict(l.split("=", 1) for l in open(salida).read().splitlines() if "=" in l)
+        return valores.get("version")

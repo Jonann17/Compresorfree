@@ -1,8 +1,6 @@
 """PR3-A: verificacion de firmas minisign (Ed25519), manifiesto, archivos y zips.
 Garantias 1 a 5 de la especificacion."""
-import copy
 import hashlib
-import json
 import shutil
 import subprocess
 import zipfile
@@ -11,7 +9,7 @@ import pytest
 
 import verificacion
 from verificacion import VerificacionFallida
-from firma_util import (Par, b64, comentario_de, firmar, firmar_manifiesto,
+from firma_util import (Par, b64, firmar, firmar_manifiesto,
                         manifiesto_rotacion, manifiesto_valido, nombre_asset, serializar)
 
 DATOS = b"contenido de prueba\n"

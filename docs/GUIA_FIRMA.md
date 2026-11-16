@@ -42,7 +42,7 @@ minisign -G -p respaldo.pub  -s respaldo.key    # USB 2
 - Guarda el USB de respaldo en un lugar físico distinto y seguro (cajón con llave, caja fuerte). Haz una copia de cada `.key` en un segundo USB si quieres.
 - **Si pierdes una clave**: si es la principal, usa la de respaldo para emitir una rotación. Si se pierde la de respaldo, genera otra pareja y sustitúyela mediante una rotación firmada con la principal. Si pierdes ambas, hay que publicar una nueva versión de la app con claves nuevas y avisar a los usuarios por otro canal.
 
-**Pasar las claves públicas al código.** Abre cada `.pub`: la 1.ª línea es un comentario (`untrusted comment: minisign public key <ID>`) y la 2.ª es la clave en base64. Con `minisign -G` el ID (16 caracteres hexadecimales en mayúsculas) también aparece en pantalla. Abre un PR que añada a `claves_confianza.py`:
+**Pasar las claves públicas al código.** Abre cada `.pub`: la 1.ª línea es un comentario (`untrusted comment: minisign public key <ID>`) y la 2.ª es la clave en base64. Con `minisign -G` el ID (hasta 16 caracteres hexadecimales en mayúsculas) también aparece en pantalla. minisign omite los ceros iniciales, así que a veces verás 15 o menos: cópialo tal cual, la app lo completa. Abre un PR que añada a `claves_confianza.py`:
 
 ```python
 CLAVES = [

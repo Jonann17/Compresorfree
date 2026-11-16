@@ -7,7 +7,7 @@ import pytest
 
 import actualizador
 import claves_confianza
-from firma_util import (Par, firmar_manifiesto, manifiesto_valido, serializar)
+from firma_util import (Par, firmar_manifiesto, manifiesto_valido)
 
 API = actualizador.URL_API
 BASE = "https://github.com/Jonann17/Compresorfree/releases/download"
