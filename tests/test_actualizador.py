@@ -7,7 +7,8 @@ import pytest
 
 import actualizador
 import claves_confianza
-from firma_util import (Par, firmar_manifiesto, manifiesto_valido)
+from firma_util import (Par, firmar, firmar_manifiesto, manifiesto_rotacion, manifiesto_valido,
+                        serializar)
 
 API = actualizador.URL_API
 BASE = "https://github.com/Jonann17/Compresorfree/releases/download"
@@ -148,8 +149,9 @@ def test_tag_de_la_release_distinto_del_manifiesto_no_es_verificado(red, princip
     """Manifiesto firmado de 1.2.0 reutilizado en la release v1.3.0."""
     datos, minisig = firmar_manifiesto(principal, manifiesto_valido("1.2.0"))
     publicar(red, release_json("1.3.0"), datos, minisig)
-    r = actualizador.buscar_actualizacion()
-    assert r is None or r["verificada"] is False
+    assert actualizador.buscar_actualizacion() == {
+        "version": "1.3.0", "notas": "Notas de prueba",
+        "url_pagina": actualizador.url_pagina("1.3.0"), "verificada": False}
 
 
 def test_release_404_devuelve_none(red, principal):
@@ -161,3 +163,115 @@ def test_ya_no_existe_la_autoinstalacion():
     for nombre in ("descargar", "instalar", "nombre_paquete"):
         assert not hasattr(actualizador, nombre)
     assert actualizador.URL_RELEASES
+
+
+# ---------- Pruebas "matadoras de mutantes" ----------
+
+def _esperado_no_verificado(version="1.2.0"):
+    return {"version": version, "notas": "Notas de prueba",
+            "url_pagina": actualizador.url_pagina(version), "verificada": False}
+
+
+@pytest.fixture
+def principal_y_respaldo(monkeypatch):
+    p, r = Par(), Par()
+    monkeypatch.setattr(claves_confianza, "CLAVES", [p.entrada("principal"), r.entrada("respaldo")])
+    monkeypatch.setattr(actualizador, "VERSION", "1.1.0")
+    return p, r
+
+
+@pytest.mark.parametrize("quien", [0, 1], ids=["firma_principal", "firma_respaldo"])
+def test_manifiesto_de_rotacion_firmado_no_es_una_release_verificada(red, principal_y_respaldo,
+                                                                      quien):
+    firmante = principal_y_respaldo[quien]
+    datos, minisig = firmar_manifiesto(firmante, manifiesto_rotacion(Par(), "1.2.0"))
+    publicar(red, release_json("1.2.0"), datos, minisig)
+    # La firma es valida, pero una rotacion no ofrece paquetes: se anuncia sin verificar.
+    assert actualizador.buscar_actualizacion() == _esperado_no_verificado()
+
+
+def test_minisig_mayor_que_el_maximo_no_es_verificado(red, principal):
+    datos, _ = firmar_manifiesto(principal, manifiesto_valido("1.2.0"))
+    comentario = "compresorfree tipo=release version=1.2.0"
+    base = firmar(principal, datos, comentario, comentario_sin_firmar="")
+    exacto = firmar(principal, datos, comentario,
+                    comentario_sin_firmar="x" * (actualizador.MAX_DESCARGA - len(base)))
+    # `exacto` mide MAX_DESCARGA bytes y es valida; con un byte mas ya no debe aceptarse.
+    assert len(exacto) == actualizador.MAX_DESCARGA
+    demasiado = firmar(principal, datos, comentario,
+                       comentario_sin_firmar="x" * (actualizador.MAX_DESCARGA - len(base) + 1))
+    assert len(demasiado) == actualizador.MAX_DESCARGA + 1
+    publicar(red, release_json("1.2.0"), datos, exacto)
+    assert actualizador.buscar_actualizacion()["verificada"] is True
+    publicar(red, release_json("1.2.0"), datos, demasiado)
+    assert actualizador.buscar_actualizacion() == _esperado_no_verificado()
+
+
+def test_manifiesto_mayor_que_el_maximo_no_es_verificado(red, principal):
+    base = serializar(manifiesto_valido("1.2.0"))
+    comentario = "compresorfree tipo=release version=1.2.0"
+    exacto = base + b" " * (actualizador.MAX_DESCARGA - len(base))  # JSON valido: espacios
+    demasiado = exacto + b" "
+    publicar(red, release_json("1.2.0"), exacto, firmar(principal, exacto, comentario))
+    assert actualizador.buscar_actualizacion()["verificada"] is True
+    publicar(red, release_json("1.2.0"), demasiado, firmar(principal, demasiado, comentario))
+    assert actualizador.buscar_actualizacion() == _esperado_no_verificado()
+
+
+@pytest.mark.parametrize("cual", ["manifest.json", "manifest.json.minisig"])
+@pytest.mark.parametrize("url_mala", ["http://github.com/x/{n}", "file:///etc/{n}",
+                                      "ftp://github.com/{n}", "HTTPS://github.com/{n}", ""])
+def test_url_de_descarga_sin_https_no_es_verificada(red, principal, cual, url_mala):
+    datos, minisig = firmar_manifiesto(principal, manifiesto_valido("1.2.0"))
+    release = release_json("1.2.0")
+    publicar(red, release, datos, minisig)  # las URL buenas responden con datos validos
+    mala = url_mala.format(n=cual)
+    for a in release["assets"]:
+        if a["name"] == cual:
+            a["browser_download_url"] = mala
+    red[mala] = datos if cual == "manifest.json" else minisig.encode()  # valido si se pidiera
+    red[API] = json.dumps(release).encode()
+    assert actualizador.buscar_actualizacion() == _esperado_no_verificado()
+    assert mala not in red["pedidas"]
+
+
+def test_url_de_descarga_ausente_no_es_verificada(red, principal):
+    datos, minisig = firmar_manifiesto(principal, manifiesto_valido("1.2.0"))
+    release = release_json("1.2.0")
+    publicar(red, release, datos, minisig)
+    for a in release["assets"]:
+        a.pop("browser_download_url", None)
+    red[API] = json.dumps(release).encode()
+    assert actualizador.buscar_actualizacion() == _esperado_no_verificado()
+
+
+def test_respuesta_de_la_api_mayor_que_el_maximo_devuelve_none(red, principal):
+    datos, minisig = firmar_manifiesto(principal, manifiesto_valido("1.2.0"))
+    release = release_json("1.2.0")
+    publicar(red, release, datos, minisig)
+    cuerpo = json.dumps(release).encode()
+    exacto = cuerpo + b" " * (actualizador.MAX_API - len(cuerpo))  # JSON valido
+    red[API] = exacto
+    assert actualizador.buscar_actualizacion()["verificada"] is True
+    red[API] = exacto + b" "
+    assert actualizador.buscar_actualizacion() is None
+
+
+@pytest.mark.parametrize("body", [["a", "b"], 5, 1.5, {"x": 1}, None, True])
+def test_body_no_textual_no_rompe_y_notas_es_str(red, principal, body):
+    datos, minisig = firmar_manifiesto(principal, manifiesto_valido("1.2.0"))
+    release = release_json("1.2.0")
+    release["body"] = body
+    publicar(red, release, datos, minisig)
+    r = actualizador.buscar_actualizacion()
+    assert r["verificada"] is True
+    assert r["notas"] == ""
+    assert isinstance(r["notas"], str)
+
+
+def test_body_textual_se_conserva_en_las_notas(red, principal):
+    datos, minisig = firmar_manifiesto(principal, manifiesto_valido("1.2.0"))
+    release = release_json("1.2.0")
+    release["body"] = "Novedades"
+    publicar(red, release, datos, minisig)
+    assert actualizador.buscar_actualizacion()["notas"] == "Novedades"

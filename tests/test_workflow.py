@@ -106,9 +106,15 @@ def test_job_version_primero_y_valida_con_regex(wf, texto):
         assert _validar_version(paso["run"], mala) is None, mala
 
 
-def test_version_py_se_genera_con_python(texto):
-    assert "json.dumps(version)" in texto.replace(" ", "") or "json.dumps(" in texto
-    assert not re.search(r"echo\s+.*version\.py", texto)
+def test_version_py_se_genera_con_python(wf):
+    escritores = [(n, p) for n, p in pasos(wf) if "version.py" in p.get("run", "")]
+    assert escritores, "ningun paso escribe version.py"
+    for nombre, paso in escritores:
+        run = paso["run"]
+        assert paso.get("shell") == "python", f"{nombre}: version.py debe escribirse con python"
+        assert "json.dumps(version)" in run.replace(" ", ""), f"{nombre}: sin json.dumps(version)"
+        assert not re.search(r"\becho\b", run), f"{nombre}: usa echo"
+        assert 'os.environ["VERSION"]' in run  # la version llega por entorno, no interpolada
 
 
 def test_pruebas_reutiliza_tests_yml_y_compilar_depende(wf):
@@ -153,6 +159,7 @@ def test_nombres_heredados_no_aparecen_en_el_workflow(texto):
 
 def test_nombres_heredados_no_aparecen_en_workflows_ni_en_py_de_la_app():
     rutas = glob.glob(os.path.join(RAIZ, "*.py"))
+    rutas += glob.glob(os.path.join(RAIZ, "herramientas", "*.py"))
     rutas += glob.glob(os.path.join(RAIZ, ".github", "workflows", "*.yml"))
     assert rutas
     for ruta in rutas:
@@ -160,6 +167,32 @@ def test_nombres_heredados_no_aparecen_en_workflows_ni_en_py_de_la_app():
             contenido = f.read()
         for nombre in HEREDADOS:
             assert nombre not in contenido, f"{nombre} en {os.path.relpath(ruta, RAIZ)}"
+
+
+@pytest.fixture(scope="module")
+def tests_yml():
+    with open(os.path.join(RAIZ, ".github", "workflows", "tests.yml"), encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def test_tests_yml_permisos_vacios_y_contents_read_por_job(tests_yml):
+    assert tests_yml.get("permissions") == {}
+    assert tests_yml["jobs"], "tests.yml sin jobs"
+    for nombre, job in tests_yml["jobs"].items():
+        assert job.get("permissions") == {"contents": "read"}, nombre
+
+
+def test_tests_yml_checkout_sin_credenciales_y_actions_fijadas(tests_yml):
+    for nombre, job in tests_yml["jobs"].items():
+        for paso in job["steps"]:
+            if "uses" in paso:
+                assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", paso["uses"]), paso["uses"]
+            if paso.get("uses", "").startswith("actions/checkout@"):
+                assert paso["with"]["persist-credentials"] is False, nombre
+
+
+def test_herramientas_existen_en_la_busqueda_de_heredados():
+    assert glob.glob(os.path.join(RAIZ, "herramientas", "*.py"))
 
 
 def _validar_version(script, pedida):

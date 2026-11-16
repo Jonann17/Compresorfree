@@ -556,3 +556,197 @@ def test_validar_zip_no_es_zip(tmp_path):
     ruta.write_bytes(b"esto no es un zip")
     with pytest.raises(VerificacionFallida):
         verificacion.validar_zip(str(ruta), asset_de(ruta))
+
+
+# ---------- 6. Pruebas "matadoras de mutantes" (cada una protege una linea concreta) ----------
+
+def test_rotacion_con_assets_no_vacios_se_rechaza():
+    m = manifiesto_rotacion(Par())
+    m["assets"] = manifiesto_valido()["assets"]
+    with pytest.raises(VerificacionFallida, match="rotacion no puede llevar paquetes"):
+        cargar(m)
+
+
+def test_asset_para_sistema_exige_tipo_release():
+    m = cargar(manifiesto_rotacion(Par()))
+    with pytest.raises(VerificacionFallida, match="solo una release"):
+        verificacion.asset_para_sistema(m, "windows", "x64")
+    # Aunque alguien le anada paquetes al diccionario ya cargado, sigue sin servirlos.
+    m["assets"] = manifiesto_valido()["assets"]
+    with pytest.raises(VerificacionFallida):
+        verificacion.asset_para_sistema(m, "windows", "x64")
+    assert verificacion.asset_para_sistema(manifiesto_valido(), "windows", "x64") is not None
+
+
+def test_assets_repetidos_para_el_mismo_sistema():
+    asset = manifiesto_valido()["assets"][0]
+    with pytest.raises(VerificacionFallida, match="repetido"):
+        cargar(manifiesto_valido(assets=[asset, dict(asset)]))
+
+
+def _asset_dmg(**cambios):
+    a = {"os": "macos", "arch": "arm64", "formato": "dmg",
+         "nombre": nombre_asset("1.2.0", "macos", "arm64", "dmg"),
+         "sha256": "c" * 64, "tamano": 1000, "tamano_expandido_max": 1000}
+    a.update(cambios)
+    return a
+
+
+def test_dmg_con_tamano_expandido_igual_se_acepta_y_mayor_se_rechaza():
+    cargar(manifiesto_valido(assets=[_asset_dmg()]))
+    with pytest.raises(VerificacionFallida, match="dmg"):
+        cargar(manifiesto_valido(assets=[_asset_dmg(tamano_expandido_max=1001)]))
+
+
+def test_rotacion_con_id_que_no_coincide_con_su_clave_publica():
+    m = manifiesto_rotacion(Par())
+    m["claves"][0]["id"] = Par().id
+    with pytest.raises(VerificacionFallida, match="no coincide"):
+        cargar(m)
+
+
+def test_rotacion_con_ids_de_clave_repetidos():
+    par = Par()
+    m = manifiesto_rotacion(par)
+    m["claves"].append({"id": par.id, "rol": "respaldo", "publica": par.publica})
+    with pytest.raises(VerificacionFallida, match="repetida"):
+        cargar(m)
+
+
+def test_rotacion_con_ids_repetidos_aunque_uno_omita_los_ceros():
+    """minisign muestra el id sin ceros a la izquierda: son la misma clave."""
+    par = Par(key_id=bytes.fromhex("1122334455667700"))
+    assert par.id == "0077665544332211"
+    m = manifiesto_rotacion(par)
+    m["claves"].append({"id": par.id.lstrip("0"), "rol": "respaldo", "publica": par.publica})
+    with pytest.raises(VerificacionFallida, match="repetida"):
+        cargar(m)
+
+
+def test_rotacion_con_dos_claves_distintas_se_acepta():
+    m = manifiesto_rotacion(Par())
+    otra = Par()
+    m["claves"].append({"id": otra.id, "rol": "respaldo", "publica": otra.publica})
+    assert len(cargar(m)["claves"]) == 2
+
+
+def test_fecha_imposible_se_rechaza():
+    with pytest.raises(VerificacionFallida, match="fecha"):
+        cargar(manifiesto_valido(creado="2026-13-45T00:00:00Z"))
+    with pytest.raises(VerificacionFallida, match="fecha"):
+        cargar(manifiesto_valido(creado="2026-02-30T00:00:00Z"))
+
+
+class _ArchivoContado:
+    """Envuelve un archivo y falla si se lee mas de `tope` bytes en total."""
+
+    def __init__(self, f, tope):
+        self.f, self.tope, self.leido = f, tope, 0
+
+    def read(self, n=-1):
+        datos = self.f.read(n)
+        self.leido += len(datos)
+        assert self.leido <= self.tope, "verificar_archivo siguio leyendo un archivo demasiado grande"
+        return datos
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.f.close()
+
+
+def test_verificar_archivo_mas_grande_corta_pronto(tmp_path, monkeypatch):
+    ruta = tmp_path / "grande.bin"
+    ruta.write_bytes(b"\0" * (8 * 1024 * 1024))
+    asset = asset_de(ruta, tamano=100)
+    real_open = open
+    monkeypatch.setattr(verificacion, "open",
+                        lambda r, m="r": _ArchivoContado(real_open(r, m), 2 * 1024 * 1024),
+                        raising=False)
+    with pytest.raises(VerificacionFallida, match="mas grande"):
+        verificacion.verificar_archivo(str(ruta), asset)
+
+
+# ---- validar_zip: estructura peligrosa ----
+
+def hacer_zip_lista(ruta, nombres):
+    """Como hacer_zip pero admite nombres repetidos (lista) y entradas de carpeta ('x/')."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with zipfile.ZipFile(ruta, "w", zipfile.ZIP_STORED) as z:
+            for nombre in nombres:
+                z.writestr(zipfile.ZipInfo(nombre), b"" if nombre.endswith("/") else b"x")
+    return str(ruta)
+
+
+def _rechaza_zip(tmp_path, nombres, **cambios):
+    ruta = hacer_zip_lista(tmp_path / "z.zip", nombres)
+    with pytest.raises(VerificacionFallida):
+        verificacion.validar_zip(ruta, asset_de(ruta, **cambios))
+
+
+def _acepta_zip(tmp_path, nombres):
+    ruta = hacer_zip_lista(tmp_path / "z.zip", nombres)
+    verificacion.validar_zip(ruta, asset_de(ruta))
+
+
+def test_validar_zip_rechaza_ads_de_ntfs(tmp_path):
+    _rechaza_zip(tmp_path, ["Compresorfree/a.exe:x"])
+    _rechaza_zip(tmp_path, ["Compresorfree/ok.txt", "Compresorfree/sub/a.exe:secreto:$DATA"])
+
+
+@pytest.mark.parametrize("nombres", [
+    ["Compresorfree/a.exe", "Compresorfree/a.exe"],
+    ["Compresorfree/a.exe", "Compresorfree/A.EXE"],
+    ["Compresorfree/sub/a.txt", "Compresorfree/SUB/A.txt"],
+    ["Compresorfree/sub/", "Compresorfree/sub/"],
+    ["Compresorfree/sub/", "Compresorfree/SUB/"],
+    ["Compresorfree/a", "Compresorfree/a/"],                       # archivo y carpeta
+    ["Compresorfree/a/b.txt", "Compresorfree/a"],                  # archivo sobre carpeta implicita
+    ["Compresorfree/a/b.txt", "Compresorfree/A"],
+], ids=lambda n: "|".join(n))
+def test_validar_zip_rechaza_entradas_repetidas(tmp_path, nombres):
+    _rechaza_zip(tmp_path, nombres)
+
+
+@pytest.mark.parametrize("nombre", [
+    "Compresorfree/CON", "Compresorfree/con", "Compresorfree/nul.txt", "Compresorfree/NUL.TXT",
+    "Compresorfree/COM1.dll", "Compresorfree/lpt9", "Compresorfree/prn", "Compresorfree/aux.x.y",
+    "Compresorfree/sub/lpt9", "Compresorfree/sub/deep/COM1.dll",
+    "Compresorfree/CON/dentro.txt", "Compresorfree/sub/nul/dentro.txt",
+])
+def test_validar_zip_rechaza_nombres_reservados_de_windows(tmp_path, nombre):
+    _rechaza_zip(tmp_path, ["Compresorfree/ok.txt", nombre])
+
+
+def test_validar_zip_acepta_nombres_parecidos_a_reservados(tmp_path):
+    _acepta_zip(tmp_path, ["Compresorfree/console.txt", "Compresorfree/com10.dll",
+                           "Compresorfree/nulo", "Compresorfree/lpt.txt"])
+
+
+@pytest.mark.parametrize("nombre", [
+    "Compresorfree/a.exe.", "Compresorfree/a.exe ", "Compresorfree/...", "Compresorfree/a.",
+    "Compresorfree/sub./a.txt", "Compresorfree/sub /a.txt", "Compresorfree/sub./",
+    "Compresorfree/a. ",
+])
+def test_validar_zip_rechaza_componentes_que_acaban_en_punto_o_espacio(tmp_path, nombre):
+    _rechaza_zip(tmp_path, ["Compresorfree/ok.txt", nombre])
+
+
+def test_validar_zip_rechaza_archivo_usado_como_carpeta(tmp_path):
+    _rechaza_zip(tmp_path, ["Compresorfree/a", "Compresorfree/a/b"])
+    _rechaza_zip(tmp_path, ["Compresorfree/a", "Compresorfree/A/b"])
+    _rechaza_zip(tmp_path, ["Compresorfree/x/a", "Compresorfree/x/a/b/c.txt"])
+
+
+def test_validar_zip_con_subcarpetas_correcto_se_acepta(tmp_path):
+    _acepta_zip(tmp_path, [
+        "Compresorfree/", "Compresorfree/Compresorfree.exe",
+        "Compresorfree/_internal/", "Compresorfree/_internal/a/b/c.bin",
+        "Compresorfree/_internal/a/d.bin", "Compresorfree/_internal/otra/e.txt",
+        "Compresorfree/leeme.txt",
+    ])
+    # Carpetas implicitas (sin entrada de carpeta) y carpetas declaradas despues.
+    _acepta_zip(tmp_path, ["Compresorfree/a/b.txt", "Compresorfree/a/", "Compresorfree/a/c.txt"])
