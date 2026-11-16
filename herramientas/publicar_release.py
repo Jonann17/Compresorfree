@@ -80,10 +80,22 @@ def main():
                "--pattern", nombre)
         comprobar_paquetes(tmp, manifiesto, "borrador en GitHub")
 
+    # Justo antes de publicar se vuelve a comprobar el borrador: nadie debe haber
+    # anadido archivos ni cambiado su commit desde las comprobaciones de arriba.
+    ultimo = ver_release(version, args.repo)
+    if (not ultimo.get("isDraft")
+            or {a["name"] for a in ultimo.get("assets", [])} != en_github
+            or commit_de_release(version, args.repo, ultimo) != manifiesto["commit"]):
+        fallar("el borrador cambio durante la publicacion. No se ha publicado nada.")
+
     print("Subiendo el manifiesto y su firma...")
     gh("release", "upload", f"v{version}", "--repo", args.repo, "--clobber",
        ruta_manifiesto, ruta_firma)
     print("Publicando la release...")
+    ultimo = ver_release(version, args.repo)
+    if ({a["name"] for a in ultimo.get("assets", [])} != en_github | {MANIFIESTO, FIRMA}
+            or commit_de_release(version, args.repo, ultimo) != manifiesto["commit"]):
+        fallar("el borrador cambio durante la publicacion. No se ha publicado nada.")
     gh("release", "edit", f"v{version}", "--repo", args.repo, "--draft=false")
     print(f"Release v{version} publicada.")
 

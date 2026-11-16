@@ -21,6 +21,7 @@ URL_RELEASES = f"https://github.com/{REPO}/releases/latest"
 MANIFIESTO = "manifest.json"
 FIRMA = "manifest.json.minisig"
 MAX_DESCARGA = 256 * 1024
+MAX_API = 1024 * 1024  # respuesta de la API de GitHub
 
 
 def _contexto_ssl():
@@ -56,7 +57,10 @@ def buscar_actualizacion():
     mas nueva, o None. Una release sin manifiesto firmado no se anuncia."""
     try:
         with _abrir(URL_API) as resp:
-            release = json.load(resp)
+            cuerpo = resp.read(MAX_API + 1)
+        if len(cuerpo) > MAX_API:
+            return None
+        release = json.loads(cuerpo)
     except urllib.error.HTTPError as e:
         if e.code == 404:  # todavia no hay ninguna release publicada
             return None
@@ -64,7 +68,7 @@ def buscar_actualizacion():
     if not isinstance(release, dict):
         return None
     tag = release.get("tag_name")
-    notas = release.get("body") or ""
+    notas = release.get("body") if isinstance(release.get("body"), str) else ""
     assets = {a.get("name"): a for a in release.get("assets") or [] if isinstance(a, dict)}
     if MANIFIESTO not in assets or FIRMA not in assets:
         return None

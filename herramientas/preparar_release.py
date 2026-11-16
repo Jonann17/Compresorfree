@@ -91,6 +91,11 @@ def main():
     assets = [describir_asset(os.path.join(carpeta, verificacion.nombre_asset(version, *a)),
                               version, *a) for a in verificacion.ASSETS_ESPERADOS]
     commit = commit_de_release(version, args.repo, release)
+    # Solo se firma codigo integrado en main (workflow_dispatch se puede lanzar
+    # desde cualquier rama).
+    comparacion = json.loads(gh("api", f"repos/{args.repo}/compare/main...{commit}"))
+    if comparacion.get("status") not in ("identical", "behind"):
+        fallar(f"el commit {commit} no esta en main. Solo se firman versiones de main.")
     manifiesto = {
         "schema": 1, "app": "Compresorfree", "canal": "estable", "tipo": "release",
         "version": version, "tag": f"v{version}", "commit": commit,

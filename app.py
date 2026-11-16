@@ -416,8 +416,9 @@ def iniciar_gui():
                 messagebox.showinfo("Actualizaciones", f"Ya tienes la ultima version ({VERSION}).")
             return
         if info["verificada"]:
-            notas = f"\n\nNovedades:\n{info['notas'][:600]}" if info["notas"].strip() else ""
-            texto = f"Hay una version nueva: {info['version']} (tienes {VERSION}).{notas}"
+            # Las notas de la release no estan firmadas: se leen en la pagina, no aqui.
+            texto = (f"Hay una version nueva verificada: {info['version']} (tienes {VERSION}). "
+                     "Las novedades estan en la pagina de la version.")
         else:
             # Sin firma valida las notas tampoco son de fiar: no se muestran.
             texto = (f"Hay una version nueva ({info['version']}), pero no se pudo verificar "

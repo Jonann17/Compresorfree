@@ -239,6 +239,9 @@ def cargar_manifiesto(datos):
     _exigir(isinstance(assets, list), "assets no es una lista")
     if tipo == "release":
         _exigir(assets, "una release necesita assets")
+    else:
+        # La clave de respaldo firma rotaciones: nunca deben traer paquetes instalables.
+        _exigir(assets == [], "una rotacion no puede llevar paquetes")
     for asset in assets:
         _validar_asset(asset, m["version"])
     sistemas = [(a["os"], a["arch"]) for a in assets]
@@ -275,6 +278,8 @@ def verificar_manifiesto(datos, minisig, claves):
 # ------------------------------------------------------------------ Paquetes
 
 def asset_para_sistema(manifiesto, os_=None, arch=None):
+    if manifiesto.get("tipo") != "release":
+        raise VerificacionFallida("solo una release ofrece paquetes")
     if os_ is None:
         os_ = {"win32": "windows", "darwin": "macos"}.get(sys.platform)
     if arch is None:
@@ -299,6 +304,14 @@ def verificar_archivo(ruta, asset):
         raise VerificacionFallida("el SHA-256 del archivo no coincide")
 
 
+_RESERVADOS_WINDOWS = {"con", "prn", "aux", "nul",
+                       *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+
+
+def _es_reservado_windows(nombre):
+    return nombre.split(".")[0].casefold() in _RESERVADOS_WINDOWS
+
+
 def validar_zip(ruta, asset):
     """Estructura segura del ZIP de Windows antes de extraerlo (para PR3-C)."""
     try:
@@ -311,7 +324,7 @@ def validar_zip(ruta, asset):
     if len(entradas) > MAX_ENTRADAS_ZIP:
         raise VerificacionFallida("zip con demasiadas entradas")
     total = 0
-    vistos = set()
+    vistos, archivos, carpetas_implicitas = set(), set(), set()
     for e in entradas:
         nombre = e.filename.replace("\\", "/")
         if nombre.startswith("/") or ":" in nombre or "\x00" in nombre:
@@ -320,7 +333,8 @@ def validar_zip(ruta, asset):
         partes = (nombre[:-1] if es_carpeta else nombre).split("/")
         if partes[0] != RAIZ_ZIP:
             raise VerificacionFallida(f"zip: fuera de {RAIZ_ZIP}/: {e.filename!r}")
-        if any(p in ("", ".", "..") for p in partes):
+        if any(p in ("", ".", "..") or p != p.rstrip(". ") or _es_reservado_windows(p)
+               for p in partes):
             raise VerificacionFallida(f"zip: ruta no permitida {e.filename!r}")
         if len(partes) == 1 and not es_carpeta:
             raise VerificacionFallida(f"zip: {RAIZ_ZIP} debe ser una carpeta")
@@ -329,10 +343,14 @@ def validar_zip(ruta, asset):
             raise VerificacionFallida(f"zip: enlace simbolico {e.filename!r}")
         if modo not in (0, stat.S_IFREG, stat.S_IFDIR):
             raise VerificacionFallida(f"zip: tipo de archivo no permitido {e.filename!r}")
-        ruta_norm = "/".join(partes).lower()
-        if ruta_norm in vistos:
+        ruta_norm = "/".join(partes).casefold()
+        if ruta_norm in vistos or ruta_norm in carpetas_implicitas and not es_carpeta:
             raise VerificacionFallida(f"zip: entrada repetida {e.filename!r}")
+        if any("/".join(partes[:i]).casefold() in archivos for i in range(1, len(partes))):
+            raise VerificacionFallida(f"zip: un archivo se usa como carpeta {e.filename!r}")
         vistos.add(ruta_norm)
+        (carpetas_implicitas if es_carpeta else archivos).add(ruta_norm)
+        carpetas_implicitas.update("/".join(partes[:i]).casefold() for i in range(1, len(partes)))
         total += e.file_size
     if total > asset["tamano_expandido_max"]:
         raise VerificacionFallida("zip: expandido supera el maximo del manifiesto")
