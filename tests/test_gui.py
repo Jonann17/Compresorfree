@@ -36,7 +36,7 @@ def _widgets(widget):
 def test_cerrar_con_si_durante_la_compresion_no_deja_nada(tmp_path, monkeypatch,
                                                          con_actualizacion):
     """Con con_actualizacion, la busqueda automatica encuentra una version nueva en
-    plena compresion: no debe ofrecerse ni instalarse (cerraria la app a medias)."""
+    plena compresion: no debe ofrecerse (ni abrir la pagina de descarga)."""
     import tkinter
     from tkinter import filedialog, messagebox
 
@@ -49,11 +49,11 @@ def test_cerrar_con_si_durante_la_compresion_no_deja_nada(tmp_path, monkeypatch,
     preguntas, descargas = [], []
     monkeypatch.setattr(messagebox, "askyesno", lambda titulo, *a, **k: preguntas.append(titulo) or True)
     if con_actualizacion:
+        import webbrowser
         monkeypatch.setattr(actualizador, "buscar_actualizacion",
-                            lambda: {"version": "9.9.9", "url": "http://x/a.zip", "notas": ""})
-        monkeypatch.setattr(actualizador, "es_app_compilada", lambda: True)
-        monkeypatch.setattr(actualizador, "descargar", lambda *a, **k: descargas.append(a))
-        monkeypatch.setattr(actualizador, "instalar", lambda *a, **k: descargas.append(a))
+                            lambda: {"version": "9.9.9", "notas": "", "verificada": True,
+                                     "url_pagina": "https://x/v9.9.9"})
+        monkeypatch.setattr(webbrowser, "open", lambda *a, **k: descargas.append(a))
     else:
         monkeypatch.setattr(actualizador, "buscar_actualizacion", lambda: None)
     cierre = []
@@ -117,7 +117,7 @@ def test_cerrar_con_si_durante_la_compresion_no_deja_nada(tmp_path, monkeypatch,
     assert guardados, "no se vio ningun proceso hijo"
     assert cierre and time.monotonic() - cierre[0] < 10, "el cierre no debe llegar al tope de 15 s"
     assert preguntas == ["Tarea en curso"], preguntas
-    assert descargas == [], "no debe instalarse una actualizacion en plena compresion"
+    assert descargas == [], "no debe ofrecerse una actualizacion en plena compresion"
     limite = time.monotonic() + 5
     while time.monotonic() < limite and any(p.poll() is None for p in guardados):
         time.sleep(0.1)
