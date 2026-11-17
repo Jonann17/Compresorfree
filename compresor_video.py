@@ -14,6 +14,8 @@ import subprocess
 import tempfile
 import threading
 
+import nucleo
+
 # Niveles de compresion. Un CRF mas alto = archivo mas pequeno y menor calidad.
 NIVELES = {
     "baja": {
@@ -121,11 +123,41 @@ def estimar(entrada, nivel="media", cancelar=None):
     return int(total_bytes / total_seg * duracion)
 
 
-def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None):
+def validar_salida(ffmpeg, ruta, duracion_esperada):
+    """Comprobacion rapida antes de publicar: el MP4 se abre, tiene video que
+    se decodifica y una duracion coherente con la del original."""
+    # Se decodifica el principio y el ultimo segundo: un archivo truncado o
+    # corrupto falla o deja errores en stderr.
+    for posicion in (["-frames:v", "3"], ["-sseof", "-1"]):
+        entrada = ["-i", ruta, *posicion] if posicion[0] == "-frames:v" else [*posicion, "-i", ruta]
+        proc = subprocess.run(
+            [ffmpeg, "-v", "error", *entrada, "-map", "0:v:0", "-f", "null", "-"],
+            capture_output=True, text=True, errors="replace", creationflags=SIN_CONSOLA,
+        )
+        if proc.returncode != 0 or proc.stderr.strip():
+            raise RuntimeError(f"El resultado no es un video valido:\n{proc.stderr[-1000:]}")
+    if duracion_esperada:
+        try:
+            duracion = obtener_duracion(ffmpeg, ruta)
+        except RuntimeError:
+            duracion = None
+        # Holgura para contenedores cuya duracion incluye pistas que no se copian.
+        tolerancia = max(2.0, duracion_esperada * 0.05)
+        if duracion is None or abs(duracion - duracion_esperada) > tolerancia:
+            raise RuntimeError(
+                f"El resultado dura {duracion} s y el original {duracion_esperada:.1f} s; "
+                "no se guardo para no entregar un video incompleto.")
+
+
+def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None,
+              si_existe="error"):
     """Comprime `entrada` a MP4. Devuelve la ruta del archivo generado.
 
     progreso: funcion opcional que recibe un porcentaje (0-100).
     cancelar: threading.Event opcional; si se activa se detiene FFmpeg.
+    si_existe: 'error' (no toca un destino existente y lanza DestinoExistente)
+               o 'renombrar' (guarda como "nombre (2).mp4", "(3)"...).
+    Nunca sobrescribe nada: escribe en un temporal y lo publica al final.
     """
     if nivel not in NIVELES:
         raise ValueError(f"Nivel invalido: {nivel}. Usa: {', '.join(NIVELES)}")
@@ -134,12 +166,22 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None)
 
     cfg = NIVELES[nivel]
     salida = salida or ruta_salida_por_defecto(entrada, nivel)
-    if os.path.abspath(salida) == os.path.abspath(entrada):
-        raise ValueError("El archivo de salida no puede ser el mismo que el de entrada.")
+    nucleo.comprobar_destino(entrada, salida, si_existe)
 
     ffmpeg = buscar_ffmpeg()
     duracion = obtener_duracion(ffmpeg, entrada)
 
+    with nucleo.salida_temporal(salida) as tmp:
+        _codificar(ffmpeg, entrada, tmp, cfg, duracion, progreso, cancelar)
+        validar_salida(ffmpeg, tmp, duracion)
+        final = nucleo.finalizar(tmp, salida, si_existe)
+
+    if progreso:
+        progreso(100.0)
+    return final
+
+
+def _codificar(ffmpeg, entrada, salida, cfg, duracion, progreso, cancelar):
     cmd = [
         ffmpeg, "-hide_banner", "-y", "-i", entrada, *_opciones_codificacion(cfg),
         "-movflags", "+faststart",
@@ -169,17 +211,12 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None)
     proc.wait()
     hilo_err.join(timeout=2)
 
+    # El temporal lo borra salida_temporal(); el destino final nunca se toco.
     if cancelar is not None and cancelar.is_set():
-        if os.path.exists(salida):
-            os.remove(salida)
         raise RuntimeError("Compresion cancelada.")
     if proc.returncode != 0:
         detalle = "".join(errores[-15:])
         raise RuntimeError(f"FFmpeg fallo (codigo {proc.returncode}):\n{detalle}")
-
-    if progreso:
-        progreso(100.0)
-    return salida
 
 
 def tamano_legible(nbytes):

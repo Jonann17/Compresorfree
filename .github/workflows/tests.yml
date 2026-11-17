@@ -1,0 +1,37 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install --only-binary=pikepdf,Pillow -r requirements.txt -r requirements-dev.txt
+
+      - name: Sistema de archivos del runner
+        shell: python
+        run: |
+          import os, platform, tempfile
+          print(platform.platform(), "| temp:", tempfile.gettempdir(), "| cwd:", os.getcwd())
+
+      - name: Pruebas
+        run: python -m pytest -v -rs
