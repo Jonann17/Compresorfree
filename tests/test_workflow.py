@@ -104,19 +104,25 @@ def test_job_version_primero_y_usa_el_script(wf, texto):
 
 def test_ejecutar_el_paso_validar_como_en_actions(wf):
     """Corre la linea real del paso con las variables de entorno y lee GITHUB_OUTPUT."""
+    import shutil
     import subprocess
     import sys
     import tempfile
     paso = next(p for p in wf["jobs"]["version"]["steps"] if p.get("id") == "validar")
-    comando = paso["run"].replace("python3", sys.executable, 1)
+    # El paso corre en ubuntu con bash; en Windows se usa el bash de Git.
+    comando = paso["run"].replace("python3", '"$PY"', 1)
+    git_bash = os.path.join(os.environ.get("ProgramFiles", ""), "Git", "bin", "bash.exe")
+    # En Windows, el bash de System32 es WSL: se prefiere el de Git.
+    bash = git_bash if os.name == "nt" and os.path.exists(git_bash) else shutil.which("bash")
+    assert bash, "hace falta bash para ejecutar el paso como en Actions"
 
     def correr(evento, ref="", manual="", pre=""):
         with tempfile.TemporaryDirectory() as tmp:
             salida = os.path.join(tmp, "salida")
             open(salida, "w").close()
             env = dict(os.environ, EVENTO=evento, NOMBRE_REF=ref, VERSION_MANUAL=manual,
-                       PRERELEASE_MANUAL=pre, GITHUB_OUTPUT=salida)
-            r = subprocess.run(comando, shell=True, env=env, capture_output=True, cwd=RAIZ)
+                       PRERELEASE_MANUAL=pre, GITHUB_OUTPUT=salida, PY=sys.executable)
+            r = subprocess.run([bash, "-c", comando], env=env, capture_output=True, cwd=RAIZ)
             if r.returncode != 0:
                 return None
             return dict(l.split("=", 1) for l in open(salida).read().splitlines() if "=" in l)
