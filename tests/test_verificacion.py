@@ -58,8 +58,8 @@ def test_firma_de_minisign_real_se_verifica(tmp_path):
     import base64
     crudo = base64.b64decode(publica)
     clave = {"id": crudo[2:10][::-1].hex().upper(), "rol": "principal", "publica": publica}
-    # minisign omite los ceros iniciales del id al mostrarlo (p. ej. 54A0... por 054A...)
-    assert lineas[0].split()[-1] == clave["id"].lstrip("0")
+    # Segun la version, minisign muestra el id con o sin ceros iniciales (054A... o 54A0...)
+    assert lineas[0].split()[-1].lstrip("0") == clave["id"].lstrip("0")
 
     manifiesto = manifiesto_valido()
     ruta = tmp_path / "manifest.json"
