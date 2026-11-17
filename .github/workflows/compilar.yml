@@ -1,8 +1,9 @@
 name: Compilar apps (Windows y macOS)
 
-# Compila en cada push a main (solo artefactos) y, con un tag vX.Y.Z o una version
-# escrita a mano, crea una release en BORRADOR. Nunca publica: el propietario
-# prepara el manifiesto, lo firma sin red y publica (ver README y docs/GUIA_FIRMA.md).
+# Compila en cada push a main (solo artefactos). Con un tag vX.Y.Z o con "Run workflow"
+# y una version, compila, genera manifest.json y PUBLICA la release (como SIG-FT).
+# Un sufijo (1.3.0-rc.1) la marca como pre-release: /releases/latest la ignora y la app
+# no la ofrece. La firma con minisign es opcional y posterior (docs/GUIA_FIRMA.md).
 
 on:
   push:
@@ -11,43 +12,43 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version de la release en borrador (ej. 1.1.0). Vacio = solo compilar"
+        description: "Version de la release (ej. 1.2.0 o 1.3.0-rc.1). Vacio = solo compilar"
         required: false
         default: ""
+      prerelease:
+        description: "Marcarla como pre-release (en un tag decide el sufijo)"
+        type: boolean
+        required: false
+        default: false
 
 permissions: {}
 
 jobs:
   version:
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.validar.outputs.version }}
+      numerica: ${{ steps.validar.outputs.numerica }}
+      tag: ${{ steps.validar.outputs.tag }}
+      prerelease: ${{ steps.validar.outputs.prerelease }}
       publicar: ${{ steps.validar.outputs.publicar }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+
       - name: Validar la version
         id: validar
-        shell: python
         env:
-          ES_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
-          NOMBRE_REF: ${{ github.ref_name }}
+          EVENTO: ${{ github.event_name }}
+          NOMBRE_REF: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           VERSION_MANUAL: ${{ inputs.version }}
+          PRERELEASE_MANUAL: ${{ inputs.prerelease }}
         run: |
-          import os, re, sys
-          if os.environ["ES_TAG"] == "true":
-              pedida = os.environ["NOMBRE_REF"]
-          else:
-              pedida = os.environ.get("VERSION_MANUAL", "")
-          if pedida == "":
-              version, publicar = "0.0.0-dev", "false"
-          # Mismo semver estricto que la app (sin ceros a la izquierda, solo ASCII).
-          elif re.fullmatch(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", pedida):
-              version, publicar = pedida.removeprefix("v"), "true"
-          else:
-              sys.exit("Version no valida: debe ser vX.Y.Z o X.Y.Z")
-          print("version:", version, "| publicar:", publicar)
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
-              f.write(f"version={version}\npublicar={publicar}\n")
+          python3 tools/version_release.py --evento "$EVENTO" --ref "$NOMBRE_REF" \
+            --entrada-version "$VERSION_MANUAL" --entrada-prerelease "$PRERELEASE_MANUAL"
 
   pruebas:
     permissions:
@@ -77,7 +78,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      NUMERICA: ${{ needs.version.outputs.numerica }}
       ASSET: Compresorfree-${{ needs.version.outputs.version }}-${{ matrix.sistema }}-${{ matrix.arch }}.${{ matrix.formato }}
+      ASSET_EXE: Compresorfree-Setup-${{ needs.version.outputs.version }}.exe
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
@@ -114,13 +117,38 @@ jobs:
           hdiutil create -volname Compresorfree -srcfolder dist/Compresorfree.app \
             -ov -format UDZO "$ASSET"
 
+      - name: Instalador (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Inno Setup suele venir en windows-latest; si no, se instala con Chocolatey.
+          $cmd = Get-Command iscc -ErrorAction SilentlyContinue
+          if ($cmd) { $iscc = $cmd.Source }
+          else {
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            if (-not (Test-Path $iscc)) {
+              choco install innosetup -y
+            }
+          }
+          & $iscc "/DMyAppVersion=$env:VERSION" "/DMyVersionInfo=$env:NUMERICA" `
+            "/O$env:GITHUB_WORKSPACE" "/FCompresorfree-Setup-$env:VERSION" `
+            installer/compresorfree.iss
+          if (-not (Test-Path $env:ASSET_EXE)) { throw "Inno Setup no genero $env:ASSET_EXE" }
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: ${{ env.ASSET }}
           path: ${{ env.ASSET }}
           if-no-files-found: error
 
-  borrador:
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        if: runner.os == 'Windows'
+        with:
+          name: ${{ env.ASSET_EXE }}
+          path: ${{ env.ASSET_EXE }}
+          if-no-files-found: error
+
+  publicar:
     if: needs.version.outputs.publicar == 'true'
     needs: [version, compilar]
     runs-on: ubuntu-latest
@@ -128,11 +156,22 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ needs.version.outputs.tag }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           path: descargas
           merge-multiple: true
+
+      - name: Generar el manifiesto y las notas
+        run: |
+          python3 tools/generar_manifiesto.py --version "$VERSION" --assets descargas \
+            --commit "$GITHUB_SHA" --notas notas_release.md
 
       - name: Comprobar los nombres de los paquetes
         shell: python
@@ -141,21 +180,29 @@ jobs:
           # los heredados de versiones anteriores) hace fallar el job.
           import os, sys
           v = os.environ["VERSION"]
-          esperados = {f"Compresorfree-{v}-windows-x64.zip",
+          esperados = {f"Compresorfree-Setup-{v}.exe",
+                       f"Compresorfree-{v}-windows-x64.zip",
                        f"Compresorfree-{v}-macos-arm64.dmg",
-                       f"Compresorfree-{v}-macos-x64.dmg"}
+                       f"Compresorfree-{v}-macos-x64.dmg",
+                       "manifest.json"}
           encontrados = set(os.listdir("descargas"))
           if encontrados != esperados:
               sys.exit(f"Paquetes inesperados: {sorted(encontrados ^ esperados)}")
           print("Paquetes:", sorted(encontrados))
 
-      - name: Crear la release en borrador
+      - name: Crear o completar la release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "v$VERSION" --draft --target "$GITHUB_SHA" \
-            --title "Compresorfree v$VERSION" --generate-notes \
-            "descargas/Compresorfree-$VERSION-windows-x64.zip" \
-            "descargas/Compresorfree-$VERSION-macos-arm64.dmg" \
-            "descargas/Compresorfree-$VERSION-macos-x64.dmg"
+          # --prerelease=false / --prerelease=true segun el tag o la casilla.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Ya existe (p. ej. un borrador): se completa y se publica.
+            gh release upload "$TAG" descargas/* --clobber
+            gh release edit "$TAG" --draft=false --target "$GITHUB_SHA" --prerelease="$PRERELEASE" \
+              --title "Compresorfree $TAG" --notes-file notas_release.md
+          else
+            gh release create "$TAG" descargas/* --target "$GITHUB_SHA" \
+              --title "Compresorfree $TAG" --notes-file notas_release.md \
+              --prerelease="$PRERELEASE"
+          fi

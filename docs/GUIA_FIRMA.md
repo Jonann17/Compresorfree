@@ -4,11 +4,11 @@ Guía para el propietario de Compresorfree. No hace falta ser especialista: bast
 
 ## 1. Qué es y por qué
 
-Cada versión de Compresorfree lleva un archivo `manifest.json` (con los nombres, tamaños y huellas SHA-256 de los instaladores) y su firma `manifest.json.minisig`. La app comprueba esa firma con tu **clave pública**, que va incluida en el código (`claves_confianza.py`). Si la firma no es válida, la app no anuncia la versión como verificada.
+Cada versión de Compresorfree lleva un archivo `manifest.json` (con los nombres, tamaños y huellas SHA-256 de los instaladores y las notas de la versión), que genera GitHub Actions al publicar. **La firma es opcional y posterior**: puedes firmar ese `manifest.json` con minisign y subir `manifest.json.minisig`. La app comprueba esa firma con tu **clave pública**, que va incluida en el código (`claves_confianza.py`). Sin firma (o sin claves en el código) la app sigue funcionando confiando en el SHA-256 publicado en el canal oficial de GitHub, pero no marca la versión como verificada; con claves configuradas, exige una firma válida para la autoinstalación.
 
 Lo importante es dónde vive la clave **privada**: en un USB, nunca en GitHub ni en tu ordenador de forma permanente. Así, aunque alguien robe tu cuenta de GitHub, puede subir archivos pero **no puede firmarlos**, y la app lo detecta.
 
-La autoinstalación está desactivada: la app solo avisa de una versión nueva y abre la página de descarga. Por eso la firma es la garantía de que el aviso es legítimo.
+La firma protege frente a una cuenta de GitHub comprometida: quien la robe puede subir archivos, pero no firmarlos.
 
 Qué es público y qué es secreto:
 
@@ -53,17 +53,17 @@ CLAVES = [
 
 **Nunca** añadas ni envíes archivos `.key`: solo las claves públicas.
 
-## 4. Publicar una versión
+## 4. Publicar y firmar una versión
 
-**(a) Crear el borrador.** En GitHub: Actions, "Run workflow" (compilar), escribe la versión (por ejemplo `1.2.0`). Se compila, pasan las pruebas y se crea una release en **borrador**. Nada se publica todavía.
+**(a) Publicar.** Añade el bloque `## X.Y.Z - AAAA-MM-DD` a `CHANGELOG.md`. En GitHub: Actions, "Run workflow" (compilar), escribe la versión (por ejemplo `1.2.0`; con sufijo `-rc.1` y/o la casilla *prerelease* se marca como pre-release), o sube un tag `vX.Y.Z`. Se pasan las pruebas, se compila, se genera `manifest.json` y la release queda **publicada** con las notas del CHANGELOG. Ya es utilizable sin firma.
 
-**(b) Preparar el manifiesto** (con internet; requiere `gh` instalado y con sesión iniciada: `gh auth status`):
+**(b) Preparar** (opcional, con internet; requiere `gh` con sesión iniciada: `gh auth status`):
 
 ```
 python herramientas/preparar_release.py vX.Y.Z
 ```
 
-Descarga los instaladores a `release-vX.Y.Z/`, calcula hashes y tamaños, y escribe `manifest.json`. Revisa el resumen y, sobre todo, la lista de commits que tocaron `.github/workflows/`: si hay cambios que no reconoces, **no firmes**.
+Descarga la release a `release-vX.Y.Z/`, comprueba que contiene exactamente los archivos esperados y que cada paquete coincide con el manifiesto, e imprime el comando de firma.
 
 **(c) Firmar sin red.** Prueba antes los ejecutables descargados. Luego:
 1. Desconecta el Wi-Fi y el cable de red.
@@ -75,13 +75,13 @@ Descarga los instaladores a `release-vX.Y.Z/`, calcula hashes y tamaños, y escr
 4. Introduce la frase de paso. Se crea `release-vX.Y.Z/manifest.json.minisig`.
 5. Retira el USB.
 
-**(d) Publicar.** Reconecta la red y ejecuta:
+**(d) Subir la firma.** Reconecta la red y ejecuta:
 
 ```
-python herramientas/publicar_release.py vX.Y.Z
+python herramientas/publicar_release.py --solo-firma vX.Y.Z
 ```
 
-Verifica la firma con las claves de `claves_confianza.py` y comprueba el manifiesto contra los archivos. Solo si todo coincide sube la firma y publica la release.
+Verifica la firma con las claves de `claves_confianza.py`, comprueba que el `manifest.json` firmado es idéntico al publicado y solo entonces sube `manifest.json.minisig`. No modifica nada más de la release.
 
 ## 5. Lista de comprobación de seguridad
 
@@ -97,7 +97,7 @@ Verifica la firma con las claves de `claves_confianza.py` y comprueba el manifie
 ## 6. Problemas frecuentes
 
 - **`gh: command not found` o "not logged in"**: instala GitHub CLI y ejecuta `gh auth login`.
-- **`preparar_release.py` dice que faltan o sobran assets**: el borrador debe tener exactamente los 3 instaladores nuevos (`windows-x64.zip`, `macos-arm64.dmg`, `macos-x64.dmg`). Vuelve a lanzar el workflow.
-- **`publicar_release.py` rechaza la firma**: casi siempre es una versión o `-t` mal escritos, firmar con la clave de respaldo, o que `claves_confianza.py` no tenga aún tu clave pública. Rehaz el paso (c) y no modifiques `manifest.json` tras firmar.
+- **`preparar_release.py` dice que faltan o sobran assets**: la release debe tener exactamente los 4 paquetes (`Setup-X.Y.Z.exe`, `windows-x64.zip`, `macos-arm64.dmg`, `macos-x64.dmg`) y `manifest.json`. Vuelve a lanzar el workflow.
+- **`publicar_release.py --solo-firma` rechaza la firma**: casi siempre es una versión o `-t` mal escritos, firmar con la clave de respaldo, o que `claves_confianza.py` no tenga aún tu clave pública. Rehaz el paso (c) y no modifiques `manifest.json` tras firmar. Si dice que no es idéntico al publicado, vuelve a ejecutar `preparar_release.py` con la carpeta vacía y firma ese archivo.
 - **Olvidé la frase de paso**: no hay recuperación. Usa la clave de respaldo para rotar (ver sección 3).
-- **La app muestra "no se pudo verificar su firma"**: la release se publicó sin firma válida o las claves de la app no coinciden. Comprueba que `manifest.json.minisig` está en la release y que el PR de claves está en la versión instalada.
+- **La app muestra "no se pudo verificar su firma"**: la release se publicó sin firma (es opcional) o con una firma no válida o las claves de la app no coinciden. Comprueba que `manifest.json.minisig` está en la release y que el PR de claves está en la versión instalada.

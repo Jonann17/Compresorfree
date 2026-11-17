@@ -91,19 +91,48 @@ def test_sin_interpolacion_peligrosa_en_ningun_run(wf):
             assert peligro not in run, f"{nombre}: {peligro}"
 
 
-def test_job_version_primero_y_valida_con_regex(wf, texto):
-    assert "version" in wf["jobs"]
+def test_job_version_primero_y_usa_el_script(wf, texto):
     assert next(iter(wf["jobs"])) == "version"
-    assert "outputs" in wf["jobs"]["version"]
-    assert {"version", "publicar"} <= set(wf["jobs"]["version"]["outputs"])
-    # La validacion se comprueba ejecutando el script real del paso, no buscando texto.
+    job = wf["jobs"]["version"]
+    assert {"version", "numerica", "tag", "prerelease", "publicar"} <= set(job["outputs"])
+    paso = next(p for p in job["steps"] if p.get("id") == "validar")
+    assert "tools/version_release.py" in paso["run"]
+    # Las entradas llegan por entorno y la logica esta en un script con pruebas.
+    assert {"EVENTO", "NOMBRE_REF", "VERSION_MANUAL", "PRERELEASE_MANUAL"} <= set(paso["env"])
+    assert any(p.get("uses", "").startswith("actions/checkout@") for p in job["steps"])
+
+
+def test_ejecutar_el_paso_validar_como_en_actions(wf):
+    """Corre la linea real del paso con las variables de entorno y lee GITHUB_OUTPUT."""
+    import shutil
+    import subprocess
+    import sys
+    import tempfile
     paso = next(p for p in wf["jobs"]["version"]["steps"] if p.get("id") == "validar")
-    assert paso.get("shell") == "python"
-    for pedida, esperado in [("v1.2.3", "1.2.3"), ("1.2.3", "1.2.3"), ("", "0.0.0-dev")]:
-        assert _validar_version(paso["run"], pedida) == esperado
-    for mala in ["1.2", "v1.2.3.4", "01.2.3", "1.2.3\nx=1", "1.2.3;rm -rf /", "$(id)",
-                 "1.2.3-rc1", "\u0661.2.3", " 1.2.3"]:
-        assert _validar_version(paso["run"], mala) is None, mala
+    # El paso corre en ubuntu con bash; en Windows se usa el bash de Git.
+    comando = paso["run"].replace("python3", '"$PY"', 1)
+    git_bash = os.path.join(os.environ.get("ProgramFiles", ""), "Git", "bin", "bash.exe")
+    # En Windows, el bash de System32 es WSL: se prefiere el de Git.
+    bash = git_bash if os.name == "nt" and os.path.exists(git_bash) else shutil.which("bash")
+    assert bash, "hace falta bash para ejecutar el paso como en Actions"
+
+    def correr(evento, ref="", manual="", pre=""):
+        with tempfile.TemporaryDirectory() as tmp:
+            salida = os.path.join(tmp, "salida")
+            open(salida, "w").close()
+            env = dict(os.environ, EVENTO=evento, NOMBRE_REF=ref, VERSION_MANUAL=manual,
+                       PRERELEASE_MANUAL=pre, GITHUB_OUTPUT=salida, PY=sys.executable)
+            r = subprocess.run([bash, "-c", comando], env=env, capture_output=True, cwd=RAIZ)
+            if r.returncode != 0:
+                return None
+            return dict(l.split("=", 1) for l in open(salida).read().splitlines() if "=" in l)
+
+    assert correr("push", ref="v1.2.3")["version"] == "1.2.3"
+    assert correr("push", ref="v1.3.0-rc.1")["prerelease"] == "true"
+    assert correr("workflow_dispatch", manual="1.2.3", pre="false")["prerelease"] == "false"
+    assert correr("push")["publicar"] == "false"
+    assert correr("workflow_dispatch", manual="1.2") is None
+    assert correr("workflow_dispatch", manual="1.2.3\nx=1") is None
 
 
 def test_version_py_se_genera_con_python(wf):
@@ -130,26 +159,57 @@ def test_tests_yml_es_reutilizable():
     assert "workflow_call" in disparadores
 
 
-def test_solo_el_job_borrador_tiene_contents_write(wf):
+def test_solo_el_job_publicar_tiene_contents_write(wf):
     con_escritura = [n for n, j in wf["jobs"].items()
                      if (j.get("permissions") or {}).get("contents") == "write"]
-    assert con_escritura == ["borrador"]
+    assert con_escritura == ["publicar"]
+    assert "borrador" not in wf["jobs"]
 
 
-def test_borrador_solo_si_publicar_y_necesita_compilar(wf):
-    job = wf["jobs"]["borrador"]
+def test_publicar_solo_si_publicar_y_necesita_compilar(wf):
+    job = wf["jobs"]["publicar"]
     needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
     assert "compilar" in needs
     assert "publicar" in str(job.get("if", ""))
 
 
-def test_borrador_crea_release_en_borrador_y_nunca_publica(wf):
-    run = "\n".join(p.get("run", "") for p in wf["jobs"]["borrador"]["steps"])
+def test_publicar_crea_release_sin_draft_y_la_completa_si_existe(wf):
+    run = "\n".join(p.get("run", "") for p in wf["jobs"]["publicar"]["steps"])
     assert "gh release create" in run
-    assert "--draft" in run
-    assert "--draft=false" not in run
-    assert "gh release edit" not in run
-    assert "--target" in run
+    assert "--draft" not in run.replace("--draft=false", "")
+    assert "gh release edit" in run and "--draft=false" in run
+    # Un borrador viejo apuntaria al commit en que se creo: el tag debe ser el de este build.
+    assert run.count("--target \"$GITHUB_SHA\"") == 2
+    assert "gh release upload" in run and "--clobber" in run
+    assert "--target" in run and "--notes-file notas_release.md" in run
+    assert '--prerelease="$PRERELEASE"' in run
+    assert "--generate-notes" not in run
+
+
+def test_publicar_hace_checkout_sin_credenciales_y_genera_el_manifiesto(wf):
+    pasos_ = wf["jobs"]["publicar"]["steps"]
+    checkout = next(p for p in pasos_ if p.get("uses", "").startswith("actions/checkout@"))
+    assert checkout["with"]["persist-credentials"] is False
+    run = "\n".join(p.get("run", "") for p in pasos_)
+    assert "tools/generar_manifiesto.py" in run and "$GITHUB_SHA" in run
+
+
+def test_todos_los_checkout_sin_credenciales(wf):
+    checkouts = [p for _, p in pasos(wf) if p.get("uses", "").startswith("actions/checkout@")]
+    assert len(checkouts) >= 3
+    for p in checkouts:
+        assert p["with"]["persist-credentials"] is False
+
+
+def test_se_compila_el_instalador_y_se_publican_los_nombres_exactos(wf, texto):
+    run = "\n".join(p.get("run", "") for _, p in pasos(wf))
+    assert "installer/compresorfree.iss" in run
+    assert "choco install innosetup -y" in run
+    paso = next(p for p in wf["jobs"]["publicar"]["steps"] if p.get("name", "").startswith("Comprobar"))
+    for nombre in ("Compresorfree-Setup-{v}.exe", "Compresorfree-{v}-windows-x64.zip",
+                   "Compresorfree-{v}-macos-arm64.dmg", "Compresorfree-{v}-macos-x64.dmg",
+                   "manifest.json"):
+        assert nombre in paso["run"]
 
 
 def test_nombres_heredados_no_aparecen_en_el_workflow(texto):
