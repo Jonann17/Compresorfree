@@ -70,25 +70,57 @@ def ruta_salida_por_defecto(entrada, nivel):
     return f"{base}_comprimido_{nivel}.mp4"
 
 
-def _opciones_codificacion(cfg):
+BITRATE_VIDEO_MIN = 100_000  # bps; por debajo no hay video util
+AUDIO_MINIMO = "64k"
+
+
+def _opciones_codificacion(cfg, bitrate_video=None, audio=None, con_audio=True):
     # Dimensiones pares (requisito de H.264/yuv420p) y limite de altura opcional.
     if cfg["altura_max"]:
         escala = f"scale=-2:'min({cfg['altura_max']},trunc(ih/2)*2)'"
     else:
         escala = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    calidad = (["-b:v", str(int(bitrate_video))] if bitrate_video
+               else ["-crf", str(cfg["crf"])])
+    audio_opts = (["-map", "0:a:0?", "-c:a", "aac", "-b:a", audio or cfg["audio"], "-ac", "2"]
+                  if con_audio else ["-an"])
     return [
-        "-map", "0:v:0", "-map", "0:a:0?",
+        "-map", "0:v:0",
         "-vf", escala,
-        "-c:v", "libx264", "-crf", str(cfg["crf"]), "-preset", cfg["preset"],
+        "-c:v", "libx264", *calidad, "-preset", cfg["preset"],
         "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", cfg["audio"], "-ac", "2",
+        *audio_opts,
     ]
 
 
-def estimar(entrada, nivel="media", cancelar=None):
+def _bps(texto):
+    return int(texto[:-1]) * 1000 if texto.endswith("k") else int(texto)
+
+
+def _bitrates_objetivo(cfg, objetivo_bytes, duracion):
+    """(video_bps, audio) para que el MP4 quepa en objetivo_bytes (3% de margen
+    de contenedor). Baja el audio a 64k si hace falta; error si no queda video."""
+    if not duracion:
+        raise RuntimeError("No se pudo determinar la duracion del video; "
+                           "no se puede calcular el tamano objetivo.")
+    total = objetivo_bytes * 8 * 0.97 / duracion
+    audio = cfg["audio"]
+    if total - _bps(audio) < BITRATE_VIDEO_MIN:
+        audio = AUDIO_MINIMO
+    video = total - _bps(audio)
+    if video < BITRATE_VIDEO_MIN:
+        raise RuntimeError(
+            f"El tamano objetivo es demasiado pequeno para un video de {duracion:.0f} s")
+    return int(video), audio
+
+
+def estimar(entrada, nivel="media", cancelar=None, objetivo_mb=None):
     """Estima el tamano final en bytes comprimiendo algunos segundos de muestra
     (al 20%, 50% y 80% del video) y extrapolando a la duracion total.
+    Con objetivo_mb devuelve directamente el tamano objetivo en bytes.
     Devuelve None si no se puede estimar o si se cancela."""
+    if objetivo_mb:
+        return int(objetivo_mb * 1024 * 1024)
     try:
         return _estimar(entrada, NIVELES[nivel], cancelar)
     except procesos.Cancelado:
@@ -152,13 +184,15 @@ def validar_salida(ffmpeg, ruta, duracion_esperada, cancelar=None):
 
 
 def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None,
-              si_existe="error"):
+              si_existe="error", objetivo_mb=None):
     """Comprime `entrada` a MP4. Devuelve la ruta del archivo generado.
 
     progreso: funcion opcional que recibe un porcentaje (0-100).
     cancelar: threading.Event opcional; si se activa se detiene FFmpeg.
     si_existe: 'error' (no toca un destino existente y lanza DestinoExistente)
                o 'renombrar' (guarda como "nombre (2).mp4", "(3)"...).
+    objetivo_mb: tamano maximo en MB; codifica en dos pasadas a un bitrate
+               calculado (progreso: pasada 1 = 0-50%, pasada 2 = 50-100%).
     Nunca sobrescribe nada: escribe en un temporal y lo publica al final.
     """
     if nivel not in NIVELES:
@@ -172,11 +206,18 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None,
 
     ffmpeg = buscar_ffmpeg()
     duracion = obtener_duracion(ffmpeg, entrada, cancelar)
+    objetivo_bytes = int(objetivo_mb * 1024 * 1024) if objetivo_mb else None
+    if objetivo_bytes:
+        bitrate, audio = _bitrates_objetivo(cfg, objetivo_bytes, duracion)
     # Sin cota segura del tamano de salida: solo un aviso temprano.
     nucleo.comprobar_espacio(os.path.dirname(os.path.abspath(salida)), nucleo.MARGEN_ESPACIO)
 
     with nucleo.salida_temporal(salida) as tmp:
-        _codificar(ffmpeg, entrada, tmp, cfg, duracion, progreso, cancelar)
+        if objetivo_bytes:
+            _codificar_objetivo(ffmpeg, entrada, tmp, cfg, duracion, progreso, cancelar,
+                                objetivo_bytes, bitrate, audio)
+        else:
+            _codificar(ffmpeg, entrada, tmp, cfg, duracion, progreso, cancelar)
         validar_salida(ffmpeg, tmp, duracion, cancelar)
         # Nada se publica despues de cancelar; el temporal lo borra salida_temporal().
         if cancelar is not None and cancelar.is_set():
@@ -186,6 +227,61 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None,
     if progreso:
         progreso(100.0)
     return final
+
+
+def _codificar_objetivo(ffmpeg, entrada, salida, cfg, duracion, progreso, cancelar,
+                        objetivo_bytes, bitrate, audio):
+    """Dos pasadas; si se pasa mas de un 3% reintenta una vez con menos bitrate."""
+    for intento in range(2):
+        _dos_pasadas(ffmpeg, entrada, salida, cfg, duracion, progreso, cancelar,
+                     bitrate, audio)
+        tamano = os.path.getsize(salida)
+        if tamano <= objetivo_bytes * 1.03:
+            return
+        if intento == 0:
+            # Se resta el exceso (el audio es fijo): proporcional al total no basta.
+            bitrate = int(bitrate - (tamano - objetivo_bytes * 0.98) * 8 / duracion)
+            if bitrate < BITRATE_VIDEO_MIN:
+                return
+    # Aun asi se publica: el resumen muestra el tamano real.
+
+
+def _dos_pasadas(ffmpeg, entrada, salida, cfg, duracion, progreso, cancelar, bitrate, audio):
+    carpeta = tempfile.mkdtemp(prefix="compresorfree_pasadas_")
+    try:
+        log = os.path.join(carpeta, "pasada")
+        # no-mbtree: con mbtree + hilos, libx264 de algunas builds de FFmpeg (6.1)
+        # se cuelga en la pasada 2 ("MV out of thread range").
+        base = [ffmpeg, "-hide_banner", "-y", "-i", entrada]
+        sin_mbtree = ["-x264-params", "no-mbtree=1"]
+        pasadas = (
+            ("1", [*_opciones_codificacion(cfg, bitrate, con_audio=False), "-f", "null"],
+             os.devnull, 0.0),
+            ("2", [*_opciones_codificacion(cfg, bitrate, audio), "-movflags", "+faststart"],
+             salida, 50.0),
+        )
+        for n, opts, destino, desde in pasadas:
+            cmd = [*base, *opts, *sin_mbtree, "-pass", n, "-passlogfile", log,
+                   "-progress", "pipe:1", "-nostats", destino]
+            _ejecutar_ffmpeg(cmd, duracion, cancelar,
+                             lambda p, d=desde: progreso and progreso(d + p / 2))
+    finally:
+        shutil.rmtree(carpeta, ignore_errors=True)
+
+
+def _ejecutar_ffmpeg(cmd, duracion, cancelar, progreso):
+    def linea_progreso(linea):
+        if duracion and linea.startswith("out_time_us="):
+            valor = linea.split("=", 1)[1].strip()
+            if valor.isdigit():
+                progreso(min(100.0, int(valor) / 1e6 / duracion * 100))
+
+    r = procesos.ejecutar(cmd, cancelar, on_stdout_linea=linea_progreso)
+    if r.returncode != 0:
+        if "No space left on device" in r.stderr:
+            raise nucleo.EspacioInsuficiente(nucleo.MENSAJE_DISCO_LLENO)
+        detalle = "\n".join(r.stderr.splitlines()[-15:])
+        raise RuntimeError(f"FFmpeg fallo (codigo {r.returncode}):\n{detalle}")
 
 
 def _codificar(ffmpeg, entrada, salida, cfg, duracion, progreso, cancelar):
