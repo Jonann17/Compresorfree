@@ -60,3 +60,9 @@ def leer(ruta):
 
 def temporales(carpeta):
     return [n for n in os.listdir(carpeta) if ".parcial-" in n]
+
+
+@pytest.fixture(autouse=True)
+def config_aislada(tmp_path_factory, monkeypatch):
+    """Las pruebas nunca leen ni escriben las preferencias reales del usuario."""
+    monkeypatch.setenv("COMPRESORFREE_CONFIG", str(tmp_path_factory.mktemp("config")))

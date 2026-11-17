@@ -3,3 +3,4 @@ pikepdf
 Pillow
 certifi
 cryptography
+tkinterdnd2
