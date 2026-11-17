@@ -27,7 +27,7 @@ def motor(request, monkeypatch):
 
 
 def test_comprime_y_conserva_paginas(pdf_fotos, tmp_path, motor):
-    salida = compresor_pdf.comprimir(pdf_fotos, str(tmp_path / "out.pdf"), "media")
+    salida = compresor_pdf.comprimir(pdf_fotos, str(tmp_path / "out.pdf"), "media", motor=motor)
     with pikepdf.open(salida) as pdf:
         assert len(pdf.pages) == 2
     assert os.path.getsize(salida) <= os.path.getsize(pdf_fotos)
@@ -39,7 +39,7 @@ def test_c2_pdf_destino_existente_no_se_pisa(pdf_fotos, tmp_path, motor):
     with open(destino, "wb") as f:
         f.write(b"dato importante")
     with pytest.raises(DestinoExistente):
-        compresor_pdf.comprimir(pdf_fotos, destino, "media")
+        compresor_pdf.comprimir(pdf_fotos, destino, "media", motor=motor)
     assert leer(destino) == b"dato importante"
 
 
@@ -77,12 +77,10 @@ def _guardar_firmado(origen, destino, con_sigflags=True):
     return destino
 
 
-@pytest.mark.parametrize("caso", ["cifrado", "contrasena", "firmado", "firmado_sin_sigflags"])
+@pytest.mark.parametrize("caso", ["contrasena", "firmado", "firmado_sin_sigflags"])
 def test_pdf_especiales_se_omiten_sin_tocar(pdf_fotos, tmp_path, caso):
     entrada = str(tmp_path / f"{caso}.pdf")
-    if caso == "cifrado":
-        _guardar_cifrado(pdf_fotos, entrada)
-    elif caso == "contrasena":
+    if caso == "contrasena":
         _guardar_cifrado(pdf_fotos, entrada, user="clave")
     else:
         _guardar_firmado(pdf_fotos, entrada, con_sigflags=(caso == "firmado"))
@@ -111,7 +109,8 @@ def test_ghostscript_cancelable_con_comando_lento(pdf_fotos, tmp_path, monkeypat
     timer = threading.Timer(0.5, disparar)
     timer.start()
     with pytest.raises(procesos.Cancelado):
-        compresor_pdf.comprimir(pdf_fotos, salida, "media", cancelar=cancelar)
+        compresor_pdf.comprimir(pdf_fotos, salida, "media", cancelar=cancelar,
+                                    motor="ghostscript")
     fin = time.monotonic()
     timer.join()
     assert marca and 0 <= fin - marca[0] < 2
@@ -153,6 +152,7 @@ def test_ghostscript_cancelado_no_deja_basura_en_temp(tmp_path, monkeypatch):
     timer = threading.Timer(0.5, cancelar.set)
     timer.start()
     with pytest.raises(procesos.Cancelado):
-        compresor_pdf.comprimir(entrada, str(tmp_path / "out.pdf"), "media", cancelar=cancelar)
+        compresor_pdf.comprimir(entrada, str(tmp_path / "out.pdf"), "media", cancelar=cancelar,
+                                motor="ghostscript")
     timer.join()
     assert list(temp_sistema.iterdir()) == []

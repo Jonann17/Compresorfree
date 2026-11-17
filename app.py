@@ -10,6 +10,7 @@ Uso:
 
 import argparse
 import contextlib
+import gc
 import os
 import queue
 import sys
@@ -78,6 +79,14 @@ def rutas_salida(entradas, tipo, nivel, carpeta=None):
 # ---------------------------------------------------------------- Interfaz grafica
 
 def iniciar_gui():
+    _iniciar_gui()
+    # Al volver, los widgets y variables de Tk quedan en ciclos de referencias (los
+    # cierres de _iniciar_gui). Se recolectan aqui, en el hilo principal: si los
+    # recolectara un hilo de trabajo, Tcl abortaria el proceso (Tcl_AsyncDelete).
+    gc.collect()
+
+
+def _iniciar_gui():
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
 
@@ -232,6 +241,18 @@ def iniciar_gui():
                             command=lambda: borrar_estimados())
         r.pack(anchor="w")
         radios_nivel.append(r)
+    var_agresiva = tk.BooleanVar(value=False)
+    chk_agresiva = ttk.Checkbutton(grupo, text="Compresion agresiva (Ghostscript)",
+                                   variable=var_agresiva, command=lambda: borrar_estimados())
+    chk_agresiva.pack(anchor="w", pady=(6, 0))
+    if compresor_pdf.buscar_ghostscript() is None:
+        chk_agresiva.state(["disabled"])
+
+    def opciones_motor(tipo):
+        """Solo afecta a PDF; en video no se pasa nada."""
+        if tipo != "pdf":
+            return {}
+        return {"motor": "ghostscript" if var_agresiva.get() else "pikepdf"}
 
     barra = ttk.Progressbar(marco, length=420, maximum=100)
     barra.grid(row=6, column=0, columnspan=2, sticky="ew")
@@ -293,6 +314,7 @@ def iniciar_gui():
         tipo, nivel = var_tipo.get(), var_nivel.get()
         salidas = rutas_salida(entradas, tipo, nivel, var_carpeta.get() or None)
         modulo = TIPOS[tipo]["modulo"]
+        extra = opciones_motor(tipo)
         total = len(filas)
 
         cancelar.clear()
@@ -317,7 +339,7 @@ def iniciar_gui():
                 progreso(0)
                 try:
                     out = modulo.comprimir(entrada, salida, nivel, progreso, cancelar,
-                                           si_existe="renombrar")
+                                           si_existe="renombrar", **extra)
                     antes, despues = os.path.getsize(entrada), os.path.getsize(out)
                     en_ui(poner_estado_fila, fila, texto_resultado(antes, despues))
                     resultados.append((entrada, out, None))
@@ -352,6 +374,7 @@ def iniciar_gui():
         filas = list(lista.get_children())
         modulo = TIPOS[var_tipo.get()]["modulo"]
         nivel = var_nivel.get()
+        extra = opciones_motor(var_tipo.get())
         cancelar.clear()
         bloquear(True)
         barra["value"] = 0
@@ -367,7 +390,7 @@ def iniciar_gui():
                     var_estado.set(f"Estimando {i + 1} de {len(filas)}: {os.path.basename(ruta)}")))
                 omitido = False
                 try:
-                    bytes_ = modulo.estimar(ruta, nivel, cancelar)
+                    bytes_ = modulo.estimar(ruta, nivel, cancelar, **extra)
                 except nucleo.ArchivoOmitido:
                     bytes_, omitido = None, True
                 except Exception:
@@ -503,6 +526,13 @@ def iniciar_gui():
 
 # ---------------------------------------------------------------- Linea de comandos
 
+def _extra_cli(args, entrada):
+    """Argumentos extra del modulo: --motor solo aplica a PDF."""
+    if tipo_por_extension(entrada) == "pdf":
+        return {"motor": args.motor}
+    return {}
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Comprime videos (a MP4) y PDF. Sin argumentos abre la interfaz grafica."
@@ -514,6 +544,8 @@ def main():
                         help="Solo muestra el peso final estimado, sin comprimir")
     parser.add_argument("-n", "--nivel", choices=list(DESCRIPCION_NIVELES), default="media",
                         help="Nivel de compresion (por defecto: media)")
+    parser.add_argument("--motor", choices=["pikepdf", "ghostscript"], default="pikepdf",
+                        help="Motor de PDF: pikepdf (conservador, por defecto) o ghostscript (agresivo)")
     args = parser.parse_args()
 
     if not args.entradas:
@@ -536,7 +568,7 @@ def main():
         for entrada in entradas:
             modulo = TIPOS[tipo_por_extension(entrada)]["modulo"]
             try:
-                bytes_ = modulo.estimar(entrada, args.nivel)
+                bytes_ = modulo.estimar(entrada, args.nivel, **_extra_cli(args, entrada))
             except KeyboardInterrupt:
                 procesos.terminar_todos()
                 print("\nCancelado.")
@@ -579,7 +611,8 @@ def main():
         if total > 1:
             print(f"[{i}/{total}] {entrada}")
         try:
-            salida = modulo.comprimir(entrada, salida, args.nivel, barra, si_existe=si_existe)
+            salida = modulo.comprimir(entrada, salida, args.nivel, barra, si_existe=si_existe,
+                                    **_extra_cli(args, entrada))
         except KeyboardInterrupt:
             procesos.terminar_todos()
             print("\nCancelado.")
