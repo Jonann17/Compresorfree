@@ -68,8 +68,14 @@ jobs:
 
       - name: Pruebas
         if: runner.os == 'Linux'
-        run: xvfb-run -a python -m pytest -v -rs
+        run: xvfb-run -a python -m pytest -v -rs tests
+
+      # Spike del instalador (no integrable): pensado para Linux (/proc). Se ejecuta
+      # en un proceso aparte: en Windows interferia con la primera ventana de Tk.
+      - name: Spike del instalador
+        if: runner.os == 'Linux'
+        run: python -m pytest -v -rs spike
 
       - name: Pruebas
         if: runner.os != 'Linux'
-        run: python -m pytest -v -rs
+        run: python -m pytest -v -rs tests
