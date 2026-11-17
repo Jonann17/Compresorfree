@@ -14,6 +14,7 @@ import gc
 import os
 import queue
 import sys
+import subprocess
 import threading
 import time
 
@@ -21,6 +22,7 @@ import actualizador
 import compresor_pdf
 import compresor_video
 import nucleo
+import preferencias
 import procesos
 from compresor_video import resumen
 from version import VERSION
@@ -57,6 +59,30 @@ def tipo_por_extension(ruta):
     return None
 
 
+def filtrar_soltados(rutas, tipo, existentes=()):
+    """Archivos soltados que valen para `tipo` ('video'/'pdf'): existen, son
+    archivos, tienen la extension del tipo y no estan repetidos ni en `existentes`."""
+    vistos = set(existentes)
+    out = []
+    for ruta in rutas:
+        if ruta in vistos or not os.path.isfile(ruta):
+            continue
+        if tipo_por_extension(ruta) == tipo:
+            vistos.add(ruta)
+            out.append(ruta)
+    return out
+
+
+def abrir_carpeta(carpeta):
+    """Abre `carpeta` en el explorador del sistema."""
+    if sys.platform == "win32":
+        os.startfile(carpeta)  # noqa: S606
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", carpeta])
+    else:
+        subprocess.Popen(["xdg-open", carpeta])
+
+
 def texto_resultado(antes, despues):
     """Estado de la fila al terminar: 'Listo (-59%)', '(+12%)' o '(sin cambio)'."""
     if not antes:
@@ -90,13 +116,20 @@ def _iniciar_gui():
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
 
-    ventana = tk.Tk()
+    try:  # arrastrar y soltar es opcional
+        from tkinterdnd2 import DND_FILES, TkinterDnD
+        ventana = TkinterDnD.Tk()
+    except Exception:  # noqa: BLE001  (no instalado o plataforma sin soporte)
+        DND_FILES = None
+        ventana = tk.Tk()
     ventana.title(f"Compresorfree {VERSION}")
     ventana.resizable(False, False)
 
-    var_tipo = tk.StringVar(value="video")
-    var_carpeta = tk.StringVar()  # vacio = junto a cada original
-    var_nivel = tk.StringVar(value="media")
+    prefs = preferencias.cargar()
+    var_tipo = tk.StringVar(value=prefs["tipo"])
+    var_carpeta = tk.StringVar(value=prefs["carpeta"])  # vacio = junto a cada original
+    var_nivel = tk.StringVar(value=prefs["nivel"])
+    ultima_carpeta = [None]  # carpeta del ultimo resultado
     var_estado = tk.StringVar(value="Elige el tipo de archivo y agrega uno o varios.")
     cancelar = threading.Event()
     archivos = {}  # id de fila de la lista -> ruta completa
@@ -140,7 +173,12 @@ def _iniciar_gui():
     def poner_estado_fila(fila, texto):
         lista.set(fila, "estado", texto)
 
+    def guardar_prefs():
+        preferencias.guardar({"tipo": var_tipo.get(), "nivel": var_nivel.get(),
+                              "carpeta": var_carpeta.get()})
+
     def cambiar_tipo():
+        guardar_prefs()
         limpiar()
         var_estado.set(f"Agrega archivos: {TIPOS[var_tipo.get()]['nombre']}.")
 
@@ -154,10 +192,20 @@ def _iniciar_gui():
         for ruta in rutas:
             if ruta not in existentes:
                 existentes.add(ruta)
-                tamano = compresor_video.tamano_legible(os.path.getsize(ruta))
-                fila = lista.insert("", "end",
-                                    values=(os.path.basename(ruta), tamano, "", "Pendiente"))
-                archivos[fila] = ruta
+                anadir_fila(ruta)
+        actualizar_contador()
+
+    def anadir_fila(ruta):
+        tamano = compresor_video.tamano_legible(os.path.getsize(ruta))
+        fila = lista.insert("", "end", values=(os.path.basename(ruta), tamano, "", "Pendiente"))
+        archivos[fila] = ruta
+
+    def soltar(evento):
+        if tarea_en_curso():
+            return
+        for ruta in filtrar_soltados(ventana.tk.splitlist(evento.data), var_tipo.get(),
+                                     archivos.values()):
+            anadir_fila(ruta)
         actualizar_contador()
 
     def quitar():
@@ -183,10 +231,12 @@ def _iniciar_gui():
         if ruta:
             var_carpeta.set(ruta)
             etiqueta_carpeta.config(text=ruta)
+            guardar_prefs()
 
     def carpeta_original():
         var_carpeta.set("")
         etiqueta_carpeta.config(text="Junto a cada archivo original")
+        guardar_prefs()
 
     grupo_tipo = ttk.LabelFrame(marco, text="Que quieres comprimir?", padding=8)
     grupo_tipo.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
@@ -223,7 +273,7 @@ def _iniciar_gui():
         b.pack(fill="x", pady=(0, 4))
 
     ttk.Label(marco, text="Guardar en:").grid(row=3, column=0, sticky="w", pady=(10, 0))
-    etiqueta_carpeta = ttk.Label(marco, text="Junto a cada archivo original",
+    etiqueta_carpeta = ttk.Label(marco, text=prefs["carpeta"] or "Junto a cada archivo original",
                                  relief="sunken", padding=3, width=55)
     etiqueta_carpeta.grid(row=4, column=0, sticky="ew", padx=(0, 6))
     botones_carpeta = ttk.Frame(marco)
@@ -238,7 +288,7 @@ def _iniciar_gui():
     radios_nivel = []
     for nombre, texto in DESCRIPCION_NIVELES.items():
         r = ttk.Radiobutton(grupo, text=texto, value=nombre, variable=var_nivel,
-                            command=lambda: borrar_estimados())
+                            command=lambda: (guardar_prefs(), borrar_estimados()))
         r.pack(anchor="w")
         radios_nivel.append(r)
     var_agresiva = tk.BooleanVar(value=False)
@@ -268,6 +318,15 @@ def _iniciar_gui():
                               command=cancelar_tarea)
     btn_comprimir.pack(side="left", padx=4)
     btn_cancelar.pack(side="left")
+    btn_abrir = ttk.Button(botones, text="Abrir carpeta", state="disabled",
+                           command=lambda: ultima_carpeta[0] and abrir_carpeta(ultima_carpeta[0]))
+    btn_abrir.pack(side="left", padx=(4, 0))
+    if DND_FILES:
+        try:
+            lista.drop_target_register(DND_FILES)
+            lista.dnd_bind("<<Drop>>", soltar)
+        except Exception:  # noqa: BLE001
+            pass
 
     # Controles que no se pueden tocar mientras se comprime
     bloqueables = [btn_agregar, btn_quitar, btn_limpiar, btn_estimar, btn_carpeta, btn_original,
@@ -281,6 +340,9 @@ def _iniciar_gui():
     def al_terminar(resultados, omitidos, cancelado):
         bloquear(False)
         ok = [(e, s) for e, s, err in resultados if not err]
+        if ok:
+            ultima_carpeta[0] = os.path.dirname(os.path.abspath(ok[-1][1]))
+            btn_abrir.config(state="normal")
         fallidos = [(e, err) for e, s, err in resultados if err]
         antes = sum(os.path.getsize(e) for e, _ in ok)
         despues = sum(os.path.getsize(s) for _, s in ok)
@@ -479,6 +541,7 @@ def _iniciar_gui():
         nonlocal cerrando
         if cerrando or dialogo_cierre[0]:
             return
+        guardar_prefs()
         if not tarea_en_curso():
             ventana.destroy()
             return

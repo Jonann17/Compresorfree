@@ -111,6 +111,10 @@ Interfaz grafica para comprimir:
 - **Video**: cualquier formato (avi, mkv, mov, wmv, flv, webm, mpeg, 3gp, ts, ...) se convierte a MP4 (H.264 + AAC).
 - **PDF**: recomprime las imagenes y optimiza la estructura del archivo. El motor por defecto es pikepdf (conservador); la casilla "Compresion agresiva (Ghostscript)" o `--motor ghostscript` usa Ghostscript si esta instalado (el resultado se descarta si altera enlaces, formularios, adjuntos, etc.).
 
+- **Arrastrar y soltar**: suelta archivos en la lista (requiere `tkinterdnd2`, opcional; sin el la app funciona igual).
+- **Abrir carpeta**: tras comprimir, el boton abre la carpeta del ultimo resultado.
+- **Preferencias**: tipo, nivel y carpeta de salida se recuerdan (`%APPDATA%\Compresorfree`, `~/Library/Application Support/Compresorfree` o `~/.config/compresorfree`).
+
 ### Requisitos
 - Python 3.10+ con tkinter (viene incluido en Python para Windows/macOS)
 - `pip install -r requirements.txt`
