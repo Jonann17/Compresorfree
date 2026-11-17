@@ -178,6 +178,8 @@ def test_publicar_crea_release_sin_draft_y_la_completa_si_existe(wf):
     assert "gh release create" in run
     assert "--draft" not in run.replace("--draft=false", "")
     assert "gh release edit" in run and "--draft=false" in run
+    # Un borrador viejo apuntaria al commit en que se creo: el tag debe ser el de este build.
+    assert run.count("--target \"$GITHUB_SHA\"") == 2
     assert "gh release upload" in run and "--clobber" in run
     assert "--target" in run and "--notes-file notas_release.md" in run
     assert '--prerelease="$PRERELEASE"' in run

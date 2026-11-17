@@ -199,7 +199,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             # Ya existe (p. ej. un borrador): se completa y se publica.
             gh release upload "$TAG" descargas/* --clobber
-            gh release edit "$TAG" --draft=false --prerelease="$PRERELEASE" \
+            gh release edit "$TAG" --draft=false --target "$GITHUB_SHA" --prerelease="$PRERELEASE" \
               --title "Compresorfree $TAG" --notes-file notas_release.md
           else
             gh release create "$TAG" descargas/* --target "$GITHUB_SHA" \
