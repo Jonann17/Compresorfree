@@ -32,10 +32,13 @@ App de escritorio para **Windows** y **macOS** que comprime videos (a MP4) y PDF
   invalidaria la firma o quitaria su proteccion. El original queda intacto.
 
 ## Descargar la app
-Ve a la pestana **Releases** del repositorio y descarga:
-- **Windows**: `Compresorfree-Windows.zip` -> descomprimir y abrir `Compresorfree.exe`.
-- **Mac (M1/M2/M3...)**: `Compresorfree-macOS-AppleSilicon.dmg`
-- **Mac (Intel)**: `Compresorfree-macOS-Intel.dmg`
+Ve a la pestana **Releases** del repositorio y descarga (X.Y.Z es la version):
+- **Windows**: `Compresorfree-X.Y.Z-windows-x64.zip` -> descomprimir y abrir `Compresorfree.exe`.
+- **Mac (M1/M2/M3...)**: `Compresorfree-X.Y.Z-macos-arm64.dmg`
+- **Mac (Intel)**: `Compresorfree-X.Y.Z-macos-x64.dmg`
+
+Cada release incluye `manifest.json` (SHA-256 de cada paquete) y su firma
+`manifest.json.minisig`, hecha por el propietario con una clave que nunca esta en GitHub.
 
 No hace falta instalar Python ni FFmpeg: todo va incluido.
 
@@ -46,24 +49,50 @@ No hace falta instalar Python ni FFmpeg: todo va incluido.
 
 ## Actualizaciones
 La app busca actualizaciones sola al abrirse (y con el boton **Buscar actualizaciones**).
-Si hay una version nueva en *Releases*, la descarga, reemplaza la app y la vuelve a abrir.
+Si hay una version nueva, avisa y ofrece **abrir la pagina de descarga**: no descarga ni
+instala nada por su cuenta. Solo anuncia releases que traen un manifiesto firmado y
+comprueba la firma con las claves publicas de `claves_confianza.py`; si la firma no es
+valida, avisa de que no se pudo verificar y recomienda descargar solo desde la pagina
+oficial. Mientras hay una compresion en curso no se ofrece nada.
 
-### Publicar una actualizacion
-1. Sube tus cambios a `main`.
-2. Publica la version nueva (siempre un numero mayor que el anterior), de cualquiera de estas formas:
+### Publicar una version (solo el propietario)
+Ninguna clave privada ni secreto de firma se sube nunca a GitHub. GitHub Actions solo
+compila y deja la release en **borrador**; el propietario la firma sin red y la publica.
+Todo el proceso (crear las claves, guardarlas y firmar) esta en
+[docs/GUIA_FIRMA.md](docs/GUIA_FIRMA.md).
+
+1. **Borrador**: sube tus cambios a `main` y lanza la version (siempre mayor que la anterior):
    - **Desde la web**: pestana *Actions* -> *Compilar apps (Windows y macOS)* -> *Run workflow*,
      escribe la version (ej. `1.1.0`) y pulsa *Run workflow*.
-   - **Con git**:
-     ```bash
-     git tag v1.1.0
-     git push origin v1.1.0
-     ```
-3. GitHub Actions compila Windows y Mac, crea la release `v1.1.0` y todas las apps
-   instaladas la detectan la proxima vez que se abran.
+   - **Con git**: `git tag v1.1.0` y `git push origin v1.1.0`.
 
-La version que muestra la app sale de ese numero (no hace falta editar `version.py`).
-En cada push a `main` tambien se compilan las apps (pestana *Actions*, como artefactos)
-para probarlas antes de publicar.
+   Actions pasa las pruebas, compila Windows y Mac y crea la release `v1.1.0` en borrador
+   con los tres paquetes. La version que muestra la app sale de ese numero (no hace falta
+   editar `version.py`).
+2. **Preparar** (con [GitHub CLI](https://cli.github.com/) y `gh auth login`):
+   ```bash
+   python herramientas/preparar_release.py v1.1.0
+   ```
+   Descarga los paquetes a `release-v1.1.0/`, calcula sus SHA-256, escribe
+   `release-v1.1.0/manifest.json`, lista los cambios en `.github/workflows/` desde la
+   ultima release (revisalos) e imprime el comando de firma.
+3. **Firmar sin red**: en el equipo de firma, desconectado, con la clave en el USB:
+   ```bash
+   minisign -S -s <ruta_usb>/principal.key -m release-v1.1.0/manifest.json \
+     -t "compresorfree tipo=release version=1.1.0"
+   ```
+   Esto crea `release-v1.1.0/manifest.json.minisig`.
+4. **Publicar**:
+   ```bash
+   python herramientas/publicar_release.py v1.1.0
+   ```
+   Verifica la firma con `claves_confianza.py`, comprueba que el manifiesto coincida con los
+   paquetes (los locales y los del borrador en GitHub), sube el manifiesto y su firma y
+   publica la release. Si algo no cuadra, no sube nada.
+
+Una release publicada sin manifiesto firmado no se anuncia en la app.
+En cada push a `main` tambien se compilan las apps (pestana *Actions*, como artefactos
+`Compresorfree-0.0.0-dev-...`) para probarlas antes de publicar.
 
 ## Compilar en tu computadora
 ```bash

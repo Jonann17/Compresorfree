@@ -5,3 +5,6 @@ build/
 dist/
 *.spec
 .pytest_cache/
+
+# Carpetas de trabajo de herramientas/preparar_release.py
+release-v*/

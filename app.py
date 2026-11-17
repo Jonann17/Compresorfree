@@ -415,46 +415,19 @@ def iniciar_gui():
             if manual:
                 messagebox.showinfo("Actualizaciones", f"Ya tienes la ultima version ({VERSION}).")
             return
-        notas = f"\n\nNovedades:\n{info['notas'][:600]}" if info["notas"].strip() else ""
-        if not actualizador.es_app_compilada() or not info["url"]:
-            if messagebox.askyesno(
-                    "Nueva version disponible",
-                    f"Hay una version nueva: {info['version']} (tienes {VERSION}).{notas}"
-                    "\n\nAbrir la pagina de descarga?"):
-                import webbrowser
-                webbrowser.open(actualizador.URL_RELEASES)
-            return
-        if messagebox.askyesno(
-                "Nueva version disponible",
-                f"Hay una version nueva: {info['version']} (tienes {VERSION}).{notas}"
-                "\n\nDescargar e instalar ahora? La app se reiniciara."):
-            instalar_actualizacion(info)
-
-    def instalar_actualizacion(info):
-        bloquear(True)
-        btn_cancelar.config(state="disabled")
-        var_estado.set("Descargando actualizacion...")
-
-        def progreso(p):
-            en_ui(lambda: (barra.configure(value=p),
-                           var_estado.set(f"Descargando actualizacion... {p:.0f}%")))
-
-        def trabajo():
-            try:
-                paquete = actualizador.descargar(info["url"], progreso)
-                en_ui(var_estado.set, "Instalando actualizacion...")
-                actualizador.instalar(paquete)
-                en_ui(ventana.destroy)  # al cerrarse, el script copia la version nueva y la abre
-            except Exception as e:
-                msg = str(e)
-                def fallo():
-                    bloquear(False)
-                    barra["value"] = 0
-                    var_estado.set("No se pudo actualizar.")
-                    messagebox.showerror("Error al actualizar", msg)
-                en_ui(fallo)
-
-        threading.Thread(target=trabajo, daemon=True).start()
+        if info["verificada"]:
+            # Las notas de la release no estan firmadas: se leen en la pagina, no aqui.
+            texto = (f"Hay una version nueva verificada: {info['version']} (tienes {VERSION}). "
+                     "Las novedades estan en la pagina de la version.")
+        else:
+            # Sin firma valida las notas tampoco son de fiar: no se muestran.
+            texto = (f"Hay una version nueva ({info['version']}), pero no se pudo verificar "
+                     "su firma. Descargala solo desde la pagina oficial de Compresorfree "
+                     "en GitHub.")
+        if messagebox.askyesno("Nueva version disponible",
+                               texto + "\n\nAbrir la pagina de descarga?"):
+            import webbrowser
+            webbrowser.open(info["url_pagina"])
 
     def buscar_actualizacion(manual=False):
         btn_actualizar.config(state="disabled")

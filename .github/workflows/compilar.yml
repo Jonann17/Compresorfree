@@ -1,5 +1,9 @@
 name: Compilar apps (Windows y macOS)
 
+# Compila en cada push a main (solo artefactos) y, con un tag vX.Y.Z o una version
+# escrita a mano, crea una release en BORRADOR. Nunca publica: el propietario
+# prepara el manifiesto, lo firma sin red y publica (ver README y docs/GUIA_FIRMA.md).
+
 on:
   push:
     branches: [main]
@@ -7,41 +11,88 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version a publicar (ej. 1.1.0). Vacio = solo compilar"
+        description: "Version de la release en borrador (ej. 1.1.0). Vacio = solo compilar"
         required: false
         default: ""
 
-env:
-  # Version a publicar: la del tag vX.Y.Z o la escrita al ejecutar el workflow a mano.
-  VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.version }}
-
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      version: ${{ steps.validar.outputs.version }}
+      publicar: ${{ steps.validar.outputs.publicar }}
+    steps:
+      - name: Validar la version
+        id: validar
+        shell: python
+        env:
+          ES_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          NOMBRE_REF: ${{ github.ref_name }}
+          VERSION_MANUAL: ${{ inputs.version }}
+        run: |
+          import os, re, sys
+          if os.environ["ES_TAG"] == "true":
+              pedida = os.environ["NOMBRE_REF"]
+          else:
+              pedida = os.environ.get("VERSION_MANUAL", "")
+          if pedida == "":
+              version, publicar = "0.0.0-dev", "false"
+          # Mismo semver estricto que la app (sin ceros a la izquierda, solo ASCII).
+          elif re.fullmatch(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", pedida):
+              version, publicar = pedida.removeprefix("v"), "true"
+          else:
+              sys.exit("Version no valida: debe ser vX.Y.Z o X.Y.Z")
+          print("version:", version, "| publicar:", publicar)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"version={version}\npublicar={publicar}\n")
+
+  pruebas:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/tests.yml
+
   compilar:
+    needs: [version, pruebas]
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
-            nombre: Compresorfree-Windows
+            sistema: windows
+            arch: x64
+            formato: zip
           - os: macos-latest          # Apple Silicon (M1/M2/M3...)
-            nombre: Compresorfree-macOS-AppleSilicon
+            sistema: macos
+            arch: arm64
+            formato: dmg
           - os: macos-15-intel        # Mac con procesador Intel
-            nombre: Compresorfree-macOS-Intel
+            sistema: macos
+            arch: x64
+            formato: dmg
     runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ASSET: Compresorfree-${{ needs.version.outputs.version }}-${{ matrix.sistema }}-${{ matrix.arch }}.${{ matrix.formato }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
 
-      - name: Poner la version (v1.2.3 -> 1.2.3)
-        if: env.VERSION != ''
-        shell: bash
-        run: echo "VERSION = \"${VERSION#v}\"" > version.py
-
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
+
+      - name: Poner la version
+        shell: python
+        run: |
+          import json, os
+          version = os.environ["VERSION"]
+          open("version.py","w").write("VERSION = " + json.dumps(version) + "\n")
 
       - name: Instalar dependencias
         run: |
@@ -56,37 +107,56 @@ jobs:
       - name: Empaquetar (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path dist/Compresorfree -DestinationPath ${{ matrix.nombre }}.zip
+        run: Compress-Archive -Path dist/Compresorfree -DestinationPath "$env:ASSET"
 
       - name: Empaquetar (macOS)
         if: runner.os == 'macOS'
         run: |
           hdiutil create -volname Compresorfree -srcfolder dist/Compresorfree.app \
-            -ov -format UDZO ${{ matrix.nombre }}.dmg
+            -ov -format UDZO "$ASSET"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: ${{ matrix.nombre }}
-          path: |
-            ${{ matrix.nombre }}.zip
-            ${{ matrix.nombre }}.dmg
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
           if-no-files-found: error
 
-  publicar:
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
-    needs: compilar
+  borrador:
+    if: needs.version.outputs.publicar == 'true'
+    needs: [version, compilar]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           path: descargas
           merge-multiple: true
-      - name: Normalizar tag
-        run: echo "TAG=v${VERSION#v}" >> "$GITHUB_ENV"
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.TAG }}
-          name: Compresorfree ${{ env.TAG }}
-          target_commitish: ${{ github.sha }}
-          files: descargas/*
-          generate_release_notes: true
+
+      - name: Comprobar los nombres de los paquetes
+        shell: python
+        run: |
+          # Solo se aceptan exactamente los nombres nuevos: cualquier otro (incluidos
+          # los heredados de versiones anteriores) hace fallar el job.
+          import os, sys
+          v = os.environ["VERSION"]
+          esperados = {f"Compresorfree-{v}-windows-x64.zip",
+                       f"Compresorfree-{v}-macos-arm64.dmg",
+                       f"Compresorfree-{v}-macos-x64.dmg"}
+          encontrados = set(os.listdir("descargas"))
+          if encontrados != esperados:
+              sys.exit(f"Paquetes inesperados: {sorted(encontrados ^ esperados)}")
+          print("Paquetes:", sorted(encontrados))
+
+      - name: Crear la release en borrador
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "v$VERSION" --draft --target "$GITHUB_SHA" \
+            --title "Compresorfree v$VERSION" --generate-notes \
+            "descargas/Compresorfree-$VERSION-windows-x64.zip" \
+            "descargas/Compresorfree-$VERSION-macos-arm64.dmg" \
+            "descargas/Compresorfree-$VERSION-macos-x64.dmg"

@@ -2,3 +2,4 @@ imageio-ffmpeg
 pikepdf
 Pillow
 certifi
+cryptography
