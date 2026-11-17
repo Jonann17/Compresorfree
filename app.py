@@ -10,6 +10,7 @@ Uso:
 
 import argparse
 import contextlib
+import gc
 import os
 import queue
 import sys
@@ -78,6 +79,14 @@ def rutas_salida(entradas, tipo, nivel, carpeta=None):
 # ---------------------------------------------------------------- Interfaz grafica
 
 def iniciar_gui():
+    _iniciar_gui()
+    # Al volver, los widgets y variables de Tk quedan en ciclos de referencias (los
+    # cierres de _iniciar_gui). Se recolectan aqui, en el hilo principal: si los
+    # recolectara un hilo de trabajo, Tcl abortaria el proceso (Tcl_AsyncDelete).
+    gc.collect()
+
+
+def _iniciar_gui():
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
 
