@@ -28,8 +28,10 @@ App de escritorio para **Windows** y **macOS** que comprime videos (a MP4) y PDF
   temporales y se cierra sin dejar procesos ni archivos a medias. En Windows, aunque la app
   se cierre a la fuerza (Administrador de tareas), el sistema termina tambien FFmpeg y
   Ghostscript. En Linux/macOS eso no esta garantizado si la app muere con `kill -9`.
-- **PDF firmados digitalmente o cifrados se omiten** (estado *Omitido*): comprimirlos
-  invalidaria la firma o quitaria su proteccion. El original queda intacto.
+- **PDF firmados digitalmente o con contrasena de apertura se omiten** (estado *Omitido*);
+  los cifrados solo con contrasena de propietario se comprimen conservando cifrado y permisos.
+  Si el resultado altera la estructura (paginas, enlaces, formularios, adjuntos, marcadores...)
+  no se guarda. El original queda intacto.
 
 ## Descargar la app
 Ve a la pestana **Releases** del repositorio y descarga (X.Y.Z es la version):
@@ -107,13 +109,13 @@ Hay que compilar en cada sistema: el .exe en Windows y la .app en Mac.
 
 Interfaz grafica para comprimir:
 - **Video**: cualquier formato (avi, mkv, mov, wmv, flv, webm, mpeg, 3gp, ts, ...) se convierte a MP4 (H.264 + AAC).
-- **PDF**: recomprime las imagenes y optimiza la estructura del archivo.
+- **PDF**: recomprime las imagenes y optimiza la estructura del archivo. El motor por defecto es pikepdf (conservador); la casilla "Compresion agresiva (Ghostscript)" o `--motor ghostscript` usa Ghostscript si esta instalado (el resultado se descarta si altera enlaces, formularios, adjuntos, etc.).
 
 ### Requisitos
 - Python 3.10+ con tkinter (viene incluido en Python para Windows/macOS)
 - `pip install -r requirements.txt`
-- Opcional: FFmpeg y/o Ghostscript instalados en el sistema. Si existe Ghostscript se usa para PDF;
-  si no, se usa pikepdf + Pillow. Si no hay FFmpeg en el sistema se usa el de `imageio-ffmpeg`.
+- Opcional: FFmpeg y/o Ghostscript instalados en el sistema. Ghostscript solo se usa para PDF si lo pides (compresion agresiva);
+  por defecto se usa pikepdf + Pillow. Si no hay FFmpeg en el sistema se usa el de `imageio-ffmpeg`.
 
 ### Uso
 - Interfaz grafica: `python app.py` -> elige "Video" o "PDF", agrega uno o varios archivos y el nivel.
