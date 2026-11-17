@@ -10,11 +10,10 @@ La interfaz grafica y la linea de comandos estan en app.py.
 import os
 import re
 import shutil
-import subprocess
 import tempfile
-import threading
 
 import nucleo
+import procesos
 
 # Niveles de compresion. Un CRF mas alto = archivo mas pequeno y menor calidad.
 NIVELES = {
@@ -29,8 +28,7 @@ NIVELES = {
     },
 }
 
-# En Windows evita que se abra una ventana de consola por cada llamada a FFmpeg.
-SIN_CONSOLA = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+SIN_CONSOLA = procesos.SIN_CONSOLA  # alias por compatibilidad
 
 EXTENSIONES_VIDEO = (
     "*.mp4 *.m4v *.avi *.mkv *.mov *.wmv *.flv *.webm *.mpeg *.mpg *.3gp "
@@ -53,15 +51,14 @@ def buscar_ffmpeg():
         )
 
 
-def obtener_duracion(ffmpeg, entrada):
+def obtener_duracion(ffmpeg, entrada, cancelar=None):
     """Duracion del video en segundos (None si no se puede determinar)."""
-    proc = subprocess.run(
-        [ffmpeg, "-hide_banner", "-i", entrada],
-        capture_output=True, text=True, errors="replace", creationflags=SIN_CONSOLA,
-    )
-    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", proc.stderr)
+    # Margen amplio de lineas: con muchos capitulos o metadatos el stderr es largo.
+    stderr = procesos.ejecutar([ffmpeg, "-hide_banner", "-i", entrada], cancelar,
+                               max_lineas=5000).stderr
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr)
     if not m:
-        if "Invalid data" in proc.stderr or "No such file" in proc.stderr:
+        if "Invalid data" in stderr or "No such file" in stderr:
             raise RuntimeError(f"No se puede leer el archivo de video:\n{entrada}")
         return None
     h, mi, s = m.groups()
@@ -90,10 +87,17 @@ def _opciones_codificacion(cfg):
 
 def estimar(entrada, nivel="media", cancelar=None):
     """Estima el tamano final en bytes comprimiendo algunos segundos de muestra
-    (al 20%, 50% y 80% del video) y extrapolando a la duracion total."""
-    cfg = NIVELES[nivel]
+    (al 20%, 50% y 80% del video) y extrapolando a la duracion total.
+    Devuelve None si no se puede estimar o si se cancela."""
+    try:
+        return _estimar(entrada, NIVELES[nivel], cancelar)
+    except procesos.Cancelado:
+        return None
+
+
+def _estimar(entrada, cfg, cancelar):
     ffmpeg = buscar_ffmpeg()
-    duracion = obtener_duracion(ffmpeg, entrada)
+    duracion = obtener_duracion(ffmpeg, entrada, cancelar)
     if not duracion:
         return None
 
@@ -106,15 +110,13 @@ def estimar(entrada, nivel="media", cancelar=None):
     total_bytes = total_seg = 0.0
     with tempfile.TemporaryDirectory(prefix="compresorfree_") as tmp:
         for i, (inicio, seg) in enumerate(tramos):
-            if cancelar is not None and cancelar.is_set():
-                return None
             muestra = os.path.join(tmp, f"muestra{i}.mp4")
-            proc = subprocess.run(
+            r = procesos.ejecutar(
                 [ffmpeg, "-hide_banner", "-y", "-ss", f"{inicio:.3f}", "-i", entrada,
                  "-t", f"{seg:.3f}", *_opciones_codificacion(cfg), muestra],
-                capture_output=True, creationflags=SIN_CONSOLA,
+                cancelar,
             )
-            if proc.returncode != 0 or not os.path.exists(muestra):
+            if r.returncode != 0 or not os.path.exists(muestra):
                 continue
             total_bytes += os.path.getsize(muestra)
             total_seg += seg
@@ -123,22 +125,22 @@ def estimar(entrada, nivel="media", cancelar=None):
     return int(total_bytes / total_seg * duracion)
 
 
-def validar_salida(ffmpeg, ruta, duracion_esperada):
+def validar_salida(ffmpeg, ruta, duracion_esperada, cancelar=None):
     """Comprobacion rapida antes de publicar: el MP4 se abre, tiene video que
     se decodifica y una duracion coherente con la del original."""
     # Se decodifica el principio y el ultimo segundo: un archivo truncado o
     # corrupto falla o deja errores en stderr.
     for posicion in (["-frames:v", "3"], ["-sseof", "-1"]):
         entrada = ["-i", ruta, *posicion] if posicion[0] == "-frames:v" else [*posicion, "-i", ruta]
-        proc = subprocess.run(
-            [ffmpeg, "-v", "error", *entrada, "-map", "0:v:0", "-f", "null", "-"],
-            capture_output=True, text=True, errors="replace", creationflags=SIN_CONSOLA,
-        )
-        if proc.returncode != 0 or proc.stderr.strip():
-            raise RuntimeError(f"El resultado no es un video valido:\n{proc.stderr[-1000:]}")
+        r = procesos.ejecutar(
+            [ffmpeg, "-v", "error", *entrada, "-map", "0:v:0", "-f", "null", "-"], cancelar)
+        if r.returncode != 0 or r.stderr.strip():
+            raise RuntimeError(f"El resultado no es un video valido:\n{r.stderr[-1000:]}")
     if duracion_esperada:
         try:
-            duracion = obtener_duracion(ffmpeg, ruta)
+            duracion = obtener_duracion(ffmpeg, ruta, cancelar)
+        except procesos.Cancelado:
+            raise
         except RuntimeError:
             duracion = None
         # Holgura para contenedores cuya duracion incluye pistas que no se copian.
@@ -169,11 +171,14 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None,
     nucleo.comprobar_destino(entrada, salida, si_existe)
 
     ffmpeg = buscar_ffmpeg()
-    duracion = obtener_duracion(ffmpeg, entrada)
+    duracion = obtener_duracion(ffmpeg, entrada, cancelar)
 
     with nucleo.salida_temporal(salida) as tmp:
         _codificar(ffmpeg, entrada, tmp, cfg, duracion, progreso, cancelar)
-        validar_salida(ffmpeg, tmp, duracion)
+        validar_salida(ffmpeg, tmp, duracion, cancelar)
+        # Nada se publica despues de cancelar; el temporal lo borra salida_temporal().
+        if cancelar is not None and cancelar.is_set():
+            raise procesos.Cancelado()
         final = nucleo.finalizar(tmp, salida, si_existe)
 
     if progreso:
@@ -189,34 +194,16 @@ def _codificar(ffmpeg, entrada, salida, cfg, duracion, progreso, cancelar):
         salida,
     ]
 
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, errors="replace", creationflags=SIN_CONSOLA,
-    )
-    errores = []
-    hilo_err = threading.Thread(
-        target=lambda: errores.extend(proc.stderr.readlines()), daemon=True
-    )
-    hilo_err.start()
-
-    for linea in proc.stdout:
-        if cancelar is not None and cancelar.is_set():
-            proc.kill()
-            break
+    def linea_progreso(linea):
         if progreso and duracion and linea.startswith("out_time_us="):
             valor = linea.split("=", 1)[1].strip()
             if valor.isdigit():
                 progreso(min(100.0, int(valor) / 1e6 / duracion * 100))
 
-    proc.wait()
-    hilo_err.join(timeout=2)
-
-    # El temporal lo borra salida_temporal(); el destino final nunca se toco.
-    if cancelar is not None and cancelar.is_set():
-        raise RuntimeError("Compresion cancelada.")
-    if proc.returncode != 0:
-        detalle = "".join(errores[-15:])
-        raise RuntimeError(f"FFmpeg fallo (codigo {proc.returncode}):\n{detalle}")
+    r = procesos.ejecutar(cmd, cancelar, on_stdout_linea=linea_progreso)
+    if r.returncode != 0:
+        detalle = "\n".join(r.stderr.splitlines()[-15:])
+        raise RuntimeError(f"FFmpeg fallo (codigo {r.returncode}):\n{detalle}")
 
 
 def tamano_legible(nbytes):

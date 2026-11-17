@@ -7,11 +7,10 @@ las imagenes del PDF con pikepdf + Pillow (pip install pikepdf pillow).
 import io
 import os
 import shutil
-import subprocess
 import tempfile
 
 import nucleo
-from compresor_video import SIN_CONSOLA
+import procesos
 
 NIVELES = {
     # calidad JPEG, lado maximo de imagen en pixeles, ajuste de Ghostscript
@@ -34,16 +33,22 @@ def buscar_ghostscript():
     return None
 
 
-def _comprimir_ghostscript(gs, entrada, salida, cfg):
-    cmd = [
+def _comando_ghostscript(gs, entrada, salida, cfg):
+    return [
         gs, "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.5",
         f"-dPDFSETTINGS={cfg['gs']}", "-dNOPAUSE", "-dQUIET", "-dBATCH",
         f"-sOutputFile={salida}", entrada,
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
-                          creationflags=SIN_CONSOLA)
-    if proc.returncode != 0:
-        raise RuntimeError(f"Ghostscript fallo:\n{proc.stderr[-1500:]}")
+
+
+def _comprimir_ghostscript(gs, entrada, salida, cfg, cancelar=None):
+    # Ghostscript deja archivos gs_* de cientos de MB en TEMP si se le corta a
+    # mitad; se le da una carpeta propia que se borra siempre, tambien al cancelar.
+    with tempfile.TemporaryDirectory(prefix="compresorfree_gs_") as tmp:
+        env = dict(os.environ, TMPDIR=tmp, TEMP=tmp, TMP=tmp)
+        r = procesos.ejecutar(_comando_ghostscript(gs, entrada, salida, cfg), cancelar, env=env)
+    if r.returncode != 0:
+        raise RuntimeError(f"Ghostscript fallo:\n{r.stderr[-1500:]}")
 
 
 def _recomprimir_imagen(pikepdf, Image, obj, cfg):
@@ -93,17 +98,22 @@ def _comprimir_pikepdf(entrada, salida, cfg, progreso, cancelar):
         imagenes = [o for o in pdf.objects
                     if isinstance(o, pikepdf.Stream) and o.get("/Subtype") == "/Image"]
         for i, obj in enumerate(imagenes, 1):
-            if cancelar is not None and cancelar.is_set():
-                raise RuntimeError("Compresion cancelada.")
+            _comprobar_cancelacion(cancelar)
             _recomprimir_imagen(pikepdf, Image, obj, cfg)
             if progreso:
                 progreso(i / len(imagenes) * 90)
 
         pdf.remove_unreferenced_resources()
+        _comprobar_cancelacion(cancelar)  # pdf.save no se puede interrumpir
         pdf.save(
             salida, compress_streams=True, recompress_flate=True,
             object_stream_mode=pikepdf.ObjectStreamMode.generate,
         )
+
+
+def _comprobar_cancelacion(cancelar):
+    if cancelar is not None and cancelar.is_set():
+        raise procesos.Cancelado()
 
 
 def _importar_pikepdf():
@@ -194,7 +204,7 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None,
     with nucleo.salida_temporal(salida) as tmp:
         gs = buscar_ghostscript()
         if gs:
-            _comprimir_ghostscript(gs, entrada, tmp, cfg)
+            _comprimir_ghostscript(gs, entrada, tmp, cfg, cancelar)
         else:
             _comprimir_pikepdf(entrada, tmp, cfg, progreso, cancelar)
 
@@ -210,6 +220,7 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None,
             raise RuntimeError(
                 f"El resultado tiene {paginas_salida} paginas y el original {paginas}; "
                 "no se guardo.")
+        _comprobar_cancelacion(cancelar)  # nada se publica despues de cancelar
         final = nucleo.finalizar(tmp, salida, si_existe)
 
     if progreso:

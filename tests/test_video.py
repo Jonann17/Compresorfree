@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 
@@ -124,3 +125,45 @@ def test_validacion_rechaza_video_truncado(video, tmp_path):
         f.write(leer(salida)[: os.path.getsize(salida) // 3])
     with pytest.raises(RuntimeError):
         compresor_video.validar_salida(FFMPEG, truncado, 2.0)
+
+
+def test_cancelar_a_mitad_de_la_codificacion(tmp_path):
+    """Cancelar con la codificacion en marcha: RuntimeError rapido, sin salida ni temporales."""
+    import procesos
+    entrada = generar_video(str(tmp_path / "largo.avi"), 20, "640x480")
+    salida = str(tmp_path / "largo_out.mp4")
+    cancelar = threading.Event()
+    marca = []
+
+    def progreso(p):
+        if p > 0 and not cancelar.is_set():
+            marca.append(time.monotonic())
+            cancelar.set()
+
+    with pytest.raises(RuntimeError):
+        compresor_video.comprimir(entrada, salida, "media", progreso, cancelar)
+    assert marca, "la codificacion no llego a informar progreso"
+    assert time.monotonic() - marca[0] < 2
+    assert not os.path.exists(salida)
+    assert temporales(tmp_path) == []
+    assert procesos.procesos_vivos() == []
+
+
+def test_estimar_cancelado_devuelve_none_rapido(tmp_path):
+    import procesos
+    entrada = generar_video(str(tmp_path / "largo.avi"), 20, "640x480")
+    assert compresor_video.estimar(entrada, "media") > 0  # sin cancelar si estima
+    cancelar = threading.Event()
+    marca = []
+
+    def disparar():
+        marca.append(time.monotonic())
+        cancelar.set()
+
+    timer = threading.Timer(0.2, disparar)
+    timer.start()
+    assert compresor_video.estimar(entrada, "media", cancelar) is None
+    fin = time.monotonic()
+    timer.join()
+    assert marca and 0 <= fin - marca[0] < 2
+    assert procesos.procesos_vivos() == []

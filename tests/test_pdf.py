@@ -1,5 +1,8 @@
 """PDF: publicacion segura y barrera para PDF firmados o cifrados."""
 import os
+import sys
+import threading
+import time
 
 import pikepdf
 import pytest
@@ -89,3 +92,67 @@ def test_pdf_especiales_se_omiten_sin_tocar(pdf_fotos, tmp_path, caso):
         compresor_pdf.comprimir(entrada, salida, "media")
     assert leer(entrada) == original
     assert not os.path.exists(salida) and temporales(tmp_path) == []
+
+
+def test_ghostscript_cancelable_con_comando_lento(pdf_fotos, tmp_path, monkeypatch):
+    """Ghostscript (sustituido por un hijo lento) se cancela en < 2 s sin dejar nada."""
+    import procesos
+    monkeypatch.setattr(compresor_pdf, "buscar_ghostscript", lambda: "gs-falso")
+    monkeypatch.setattr(compresor_pdf, "_comando_ghostscript",
+                        lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(30)"])
+    salida = str(tmp_path / "out.pdf")
+    cancelar = threading.Event()
+    marca = []
+
+    def disparar():
+        marca.append(time.monotonic())
+        cancelar.set()
+
+    timer = threading.Timer(0.5, disparar)
+    timer.start()
+    with pytest.raises(procesos.Cancelado):
+        compresor_pdf.comprimir(pdf_fotos, salida, "media", cancelar=cancelar)
+    fin = time.monotonic()
+    timer.join()
+    assert marca and 0 <= fin - marca[0] < 2
+    assert not os.path.exists(salida)
+    assert temporales(tmp_path) == []
+    assert procesos.procesos_vivos() == []
+
+
+def test_pikepdf_cancelado_no_deja_salida(pdf_fotos, tmp_path, monkeypatch):
+    import procesos
+    monkeypatch.setattr(compresor_pdf, "buscar_ghostscript", lambda: None)
+    salida = str(tmp_path / "out.pdf")
+    cancelar = threading.Event()
+    with pytest.raises(procesos.Cancelado):
+        compresor_pdf.comprimir(pdf_fotos, salida, "media",
+                                progreso=lambda p: cancelar.set(), cancelar=cancelar)
+    assert not os.path.exists(salida)
+    assert temporales(tmp_path) == []
+
+
+@pytest.mark.skipif(compresor_pdf.buscar_ghostscript() is None, reason="Ghostscript no instalado")
+def test_ghostscript_cancelado_no_deja_basura_en_temp(tmp_path, monkeypatch):
+    """Cortar Ghostscript a mitad no deja sus archivos gs_* en la carpeta temporal."""
+    import tempfile
+    import numpy as np
+    from PIL import Image
+    import procesos
+    rng = np.random.default_rng(2)
+    paginas = [Image.fromarray((rng.random((1200, 1600, 3)) * 255).astype("uint8"))
+               for _ in range(30)]
+    entrada = str(tmp_path / "grande.pdf")
+    paginas[0].save(entrada, save_all=True, append_images=paginas[1:], quality=95)
+    temp_sistema = tmp_path / "temp_sistema"
+    temp_sistema.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_sistema))
+    for var in ("TMPDIR", "TEMP", "TMP"):
+        monkeypatch.setenv(var, str(temp_sistema))
+    cancelar = threading.Event()
+    timer = threading.Timer(0.5, cancelar.set)
+    timer.start()
+    with pytest.raises(procesos.Cancelado):
+        compresor_pdf.comprimir(entrada, str(tmp_path / "out.pdf"), "media", cancelar=cancelar)
+    timer.join()
+    assert list(temp_sistema.iterdir()) == []
