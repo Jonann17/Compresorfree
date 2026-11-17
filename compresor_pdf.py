@@ -330,7 +330,7 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None,
     huella_original = _huella_de(entrada)
     paginas = huella_original["paginas"]
 
-    # El resultado nunca supera la entrada: si pesa mas, se conserva el original.
+    # Si el resultado no pesa menos que la entrada, no se publica (SinMejora).
     nucleo.comprobar_espacio(os.path.dirname(os.path.abspath(salida)),
                              os.path.getsize(entrada) + nucleo.MARGEN_ESPACIO)
 
@@ -345,9 +345,9 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None,
                 raise nucleo.EspacioInsuficiente(nucleo.MENSAJE_DISCO_LLENO) from e
             raise
 
-        # Si el PDF ya estaba optimizado y el resultado pesa mas, se conserva el original.
-        if os.path.getsize(tmp) > os.path.getsize(entrada):
-            shutil.copyfile(entrada, tmp)
+        if os.path.getsize(tmp) >= os.path.getsize(entrada):
+            raise nucleo.SinMejora(
+                "No se redujo: el PDF ya esta optimizado; no se creo ningun archivo.")
 
         try:
             paginas_salida = _contar_paginas(tmp)
@@ -378,6 +378,8 @@ def estimar(entrada, nivel="media", cancelar=None, motor="pikepdf"):
         try:
             salida = comprimir(entrada, os.path.join(tmp, "estimado.pdf"), nivel,
                                cancelar=cancelar, motor=motor)
+        except nucleo.SinMejora:
+            return os.path.getsize(entrada)
         except RuntimeError:
             if cancelar is not None and cancelar.is_set():
                 return None

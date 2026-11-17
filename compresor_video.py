@@ -51,11 +51,30 @@ def buscar_ffmpeg():
         )
 
 
-def obtener_duracion(ffmpeg, entrada, cancelar=None):
-    """Duracion del video en segundos (None si no se puede determinar)."""
+def _info_ffmpeg(ffmpeg, entrada, cancelar=None):
     # Margen amplio de lineas: con muchos capitulos o metadatos el stderr es largo.
-    stderr = procesos.ejecutar([ffmpeg, "-hide_banner", "-i", entrada], cancelar,
-                               max_lineas=5000).stderr
+    return procesos.ejecutar([ffmpeg, "-hide_banner", "-i", entrada], cancelar,
+                             max_lineas=5000).stderr
+
+
+def es_compatible(entrada, info):
+    """True si la entrada ya es MP4/MOV con video H.264 y audio AAC (o sin audio),
+    segun la salida de `ffmpeg -i`. Se mira la primera pista de cada tipo."""
+    if os.path.splitext(entrada)[1].lower() not in (".mp4", ".mov", ".m4v"):
+        return False
+    m = re.search(r"^Input #0,\s*([^,\n]+(?:,[^,\n]+)*?),\s*from", info, re.M)
+    if not m or "mp4" not in m.group(1).split(","):
+        return False
+    video = re.search(r"Stream #0:\d+[^\n]*?: Video: (\w+)", info)
+    audio = re.search(r"Stream #0:\d+[^\n]*?: Audio: (\w+)", info)
+    return bool(video and video.group(1) == "h264"
+                and (audio is None or audio.group(1) == "aac"))
+
+
+def obtener_duracion(ffmpeg, entrada, cancelar=None, stderr=None):
+    """Duracion del video en segundos (None si no se puede determinar)."""
+    if stderr is None:
+        stderr = _info_ffmpeg(ffmpeg, entrada, cancelar)
     m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr)
     if not m:
         if "Invalid data" in stderr or "No such file" in stderr:
@@ -171,7 +190,9 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None,
     nucleo.comprobar_destino(entrada, salida, si_existe)
 
     ffmpeg = buscar_ffmpeg()
-    duracion = obtener_duracion(ffmpeg, entrada, cancelar)
+    info = _info_ffmpeg(ffmpeg, entrada, cancelar)
+    duracion = obtener_duracion(ffmpeg, entrada, cancelar, stderr=info)
+    compatible = es_compatible(entrada, info)
     # Sin cota segura del tamano de salida: solo un aviso temprano.
     nucleo.comprobar_espacio(os.path.dirname(os.path.abspath(salida)), nucleo.MARGEN_ESPACIO)
 
@@ -181,6 +202,9 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None,
         # Nada se publica despues de cancelar; el temporal lo borra salida_temporal().
         if cancelar is not None and cancelar.is_set():
             raise procesos.Cancelado()
+        if compatible and os.path.getsize(tmp) >= os.path.getsize(entrada):
+            raise nucleo.SinMejora(
+                "No se redujo: el original ya esta optimizado; no se creo ningun archivo.")
         final = nucleo.finalizar(tmp, salida, si_existe)
 
     if progreso:

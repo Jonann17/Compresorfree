@@ -278,7 +278,7 @@ def _iniciar_gui():
             w.config(state="disabled" if si else "normal")
         btn_cancelar.config(state="normal" if si else "disabled")
 
-    def al_terminar(resultados, omitidos, cancelado):
+    def al_terminar(resultados, omitidos, cancelado, sin_mejora=()):
         bloquear(False)
         ok = [(e, s) for e, s, err in resultados if not err]
         fallidos = [(e, err) for e, s, err in resultados if err]
@@ -293,6 +293,9 @@ def _iniciar_gui():
         if fallidos:
             texto += "\n\nCon error:\n" + "\n".join(
                 f"- {os.path.basename(e)}: {err.splitlines()[0]}" for e, err in fallidos[:10])
+        if sin_mejora:
+            texto += "\n\nSin mejora (el original ya esta optimizado; no se creo nada):\n" + "\n".join(
+                f"- {os.path.basename(e)}" for e in sin_mejora[:10])
         if omitidos:
             texto += "\n\nOmitidos (el original queda intacto):\n" + "\n".join(
                 f"- {os.path.basename(e)}: {motivo}" for e, motivo in omitidos[:10])
@@ -324,7 +327,7 @@ def _iniciar_gui():
             poner_estado_fila(f, "Pendiente")
 
         def trabajo():
-            resultados, omitidos = [], []
+            resultados, omitidos, sin_mejora = [], [], []
             for i, (fila, entrada, salida) in enumerate(zip(filas, entradas, salidas)):
                 if cancelar.is_set():
                     break
@@ -343,6 +346,9 @@ def _iniciar_gui():
                     antes, despues = os.path.getsize(entrada), os.path.getsize(out)
                     en_ui(poner_estado_fila, fila, texto_resultado(antes, despues))
                     resultados.append((entrada, out, None))
+                except nucleo.SinMejora:
+                    en_ui(poner_estado_fila, fila, "Sin mejora")
+                    sin_mejora.append(entrada)
                 except nucleo.ArchivoOmitido as e:
                     en_ui(poner_estado_fila, fila, "Omitido")
                     omitidos.append((entrada, str(e)))
@@ -353,7 +359,7 @@ def _iniciar_gui():
                         break
                     en_ui(poner_estado_fila, fila, "Error")
                     resultados.append((entrada, None, msg))
-            en_ui(al_terminar, resultados, omitidos, cancelar.is_set())
+            en_ui(al_terminar, resultados, omitidos, cancelar.is_set(), sin_mejora)
 
         lanzar_tarea(trabajo)
 
@@ -403,6 +409,8 @@ def _iniciar_gui():
                     antes += os.path.getsize(ruta)
                     despues += bytes_
                     texto = "~" + compresor_video.tamano_legible(bytes_)
+                    if bytes_ >= os.path.getsize(ruta):
+                        texto += " (sin mejora)"
                 en_ui(lista.set, fila, "estimado", texto)
                 en_ui(lambda p=(i + 1) / len(filas) * 100: barra.configure(value=p))
 
@@ -596,7 +604,7 @@ def main():
         llenos = int(p / 2.5)
         print(f"\r[{'#' * llenos}{'.' * (40 - llenos)}] {p:5.1f}%", end="", flush=True)
 
-    errores, omitidos = no_soportados, 0
+    errores, omitidos, sin_mejora = no_soportados, 0, 0
     # Se planifica todo el lote junto: ninguna salida puede caer sobre otra entrada.
     if args.salida:
         planes = [(e, args.salida, "error") for e in entradas]
@@ -617,6 +625,10 @@ def main():
             procesos.terminar_todos()
             print("\nCancelado.")
             sys.exit(1)
+        except nucleo.SinMejora as e:
+            print(f"\n{entrada}: {e}")
+            sin_mejora += 1
+            continue
         except nucleo.ArchivoOmitido as e:
             print(f"\n{e} El original queda intacto.", file=sys.stderr)
             omitidos += 1
@@ -626,9 +638,10 @@ def main():
             errores += 1
             continue
         print(f"\nListo: {salida}\n{resumen(entrada, salida)}\n")
+    if errores or omitidos or sin_mejora:
+        print(f"{errores} con error, {omitidos} omitido(s) y {sin_mejora} sin mejora "
+              f"de {total} archivo(s).", file=sys.stderr)
     if errores or omitidos:
-        print(f"{errores} con error y {omitidos} omitido(s) de {total} archivo(s).",
-              file=sys.stderr)
         sys.exit(1)
 
 if __name__ == "__main__":

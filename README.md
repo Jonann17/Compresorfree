@@ -98,7 +98,7 @@ En cada push a `main` tambien se compilan las apps (pestana *Actions*, como arte
 
 ## Compilar en tu computadora
 ```bash
-pip install -r requirements.txt -r requirements-build.txt
+pip install -r requirements.lock -r requirements-build.lock
 python compilar.py
 ```
 Resultado en `dist/` (`Compresorfree.exe` en Windows, `Compresorfree.app` en Mac).
@@ -113,7 +113,7 @@ Interfaz grafica para comprimir:
 
 ### Requisitos
 - Python 3.10+ con tkinter (viene incluido en Python para Windows/macOS)
-- `pip install -r requirements.txt`
+- `pip install -r requirements.lock` (versiones exactas; `requirements.txt` es la lista de alto nivel)
 - Opcional: FFmpeg y/o Ghostscript instalados en el sistema. Ghostscript solo se usa para PDF si lo pides (compresion agresiva);
   por defecto se usa pikepdf + Pillow. Si no hay FFmpeg en el sistema se usa el de `imageio-ffmpeg`.
 
@@ -131,7 +131,7 @@ Interfaz grafica para comprimir:
 
 ### Pruebas
 ```bash
-pip install -r requirements.txt -r requirements-dev.txt
+pip install -r requirements.lock -r requirements-dev.lock
 python -m pytest -v
 ```
 Las pruebas generan sus propios videos y PDF sinteticos (no usan archivos personales).
@@ -145,4 +145,5 @@ Si Ghostscript esta instalado, tambien se prueba ese motor. Se ejecutan en GitHu
 | media | CRF 28, max. 1080p, audio 128k | JPEG calidad 70, lado max. 1600 px |
 | alta  | CRF 32, max. 720p, audio 96k   | JPEG calidad 50, lado max. 1000 px |
 
-Si un PDF ya esta optimizado y el resultado pesaria mas, se guarda una copia del original.
+Sin mejora: si un PDF no se reduce, o un video que ya es MP4/MOV (H.264 + AAC) no baja de peso, no se crea ningun archivo y se avisa ("Sin mejora"; en la CLI no cuenta como error).
+Un video en otro formato se convierte a MP4 aunque pese mas.
