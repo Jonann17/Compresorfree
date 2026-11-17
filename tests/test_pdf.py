@@ -8,6 +8,7 @@ import pikepdf
 import pytest
 
 import compresor_pdf
+import nucleo
 from conftest import leer, temporales
 
 try:
@@ -27,7 +28,13 @@ def motor(request, monkeypatch):
 
 
 def test_comprime_y_conserva_paginas(pdf_fotos, tmp_path, motor):
-    salida = compresor_pdf.comprimir(pdf_fotos, str(tmp_path / "out.pdf"), "media", motor=motor)
+    try:
+        salida = compresor_pdf.comprimir(pdf_fotos, str(tmp_path / "out.pdf"), "media",
+                                         motor=motor)
+    except nucleo.SinMejora:  # Ghostscript puede no reducir un PDF de ruido ya en JPEG
+        assert motor == "ghostscript" and not (tmp_path / "out.pdf").exists()
+        assert temporales(tmp_path) == []
+        return
     with pikepdf.open(salida) as pdf:
         assert len(pdf.pages) == 2
     assert os.path.getsize(salida) <= os.path.getsize(pdf_fotos)
@@ -43,14 +50,14 @@ def test_c2_pdf_destino_existente_no_se_pisa(pdf_fotos, tmp_path, motor):
     assert leer(destino) == b"dato importante"
 
 
-def test_pdf_sin_mejora_se_publica_identico(tmp_path, monkeypatch):
+def test_pdf_sin_mejora_no_publica(tmp_path, monkeypatch):
     monkeypatch.setattr(compresor_pdf, "buscar_ghostscript", lambda: None)
     pdf = pikepdf.new()
     pdf.add_blank_page()
     entrada = str(tmp_path / "vacio.pdf")
     pdf.save(entrada)
-    salida = compresor_pdf.comprimir(entrada, None, "alta")
-    assert os.path.getsize(salida) <= os.path.getsize(entrada)
+    with pytest.raises(nucleo.SinMejora):
+        compresor_pdf.comprimir(entrada, None, "alta")
     assert temporales(tmp_path) == []
 
 

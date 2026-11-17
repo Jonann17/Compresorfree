@@ -33,6 +33,10 @@ class ArchivoOmitido(Exception):
     """El archivo no se procesa a proposito (por ejemplo, un PDF firmado)."""
 
 
+class SinMejora(ArchivoOmitido):
+    """La conversion no reduce el peso de un original ya optimizado; no se crea nada."""
+
+
 class EspacioInsuficiente(OSError):
     """No queda espacio en el disco de destino."""
 
