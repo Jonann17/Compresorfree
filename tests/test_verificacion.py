@@ -276,7 +276,7 @@ def test_falta_campo_obligatorio(campo):
         cargar(m)
 
 
-@pytest.mark.parametrize("version", ["1.2", "1.2.3.4", "v1.2.0", "1.2.0-beta", "a.b.c",
+@pytest.mark.parametrize("version", ["1.2", "1.2.3.4", "v1.2.0", "1.2.0-", "1.2.0-be ta", "a.b.c",
                                      "01.2.0x", "", "1.2.0\n"])
 def test_version_no_semver(version):
     m = manifiesto_valido(version="1.2.0")
@@ -382,7 +382,13 @@ def test_no_utf8_y_no_objeto():
     ("1.0.9", "1.1.0", False),       # downgrade
     ("1.10.0", "1.9.0", True),       # comparacion numerica, no de texto
     ("0.0.1", "0.0.0-dev", True),
-    ("0.0.0", "0.0.0-dev", False),
+    ("0.0.0", "0.0.0-dev", True),       # SemVer: la pre-release es menor que la final
+    ("1.3.0-rc.1", "1.2.0", True),
+    ("1.3.0-rc.1", "1.3.0", False),
+    ("1.3.0", "1.3.0-rc.1", True),
+    ("1.3.0-rc.2", "1.3.0-rc.1", True),
+    ("1.3.0-rc.10", "1.3.0-rc.9", True),
+    ("1.3.0-rc.1", "1.3.0-rc.1", False),
     ("1.0.0", "0.0.0-dev", True),
     ("2.0.0", "1.99.99", True),
     ("1.2.0", "raro", True),         # actual no estricta cuenta como 0.0.0
@@ -392,7 +398,7 @@ def test_es_mas_nueva(version, actual, esperado):
 
 
 def test_es_mas_nueva_rechaza_version_no_estricta():
-    for v in ("1.2", "v1.2.0", "1.2.0-beta", ""):
+    for v in ("1.2", "v1.2.0", "1.2.0-", ""):
         try:
             assert verificacion.es_mas_nueva(v, "0.0.0") is False
         except VerificacionFallida:

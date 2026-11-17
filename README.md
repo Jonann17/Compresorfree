@@ -35,12 +35,13 @@ App de escritorio para **Windows** y **macOS** que comprime videos (a MP4) y PDF
 
 ## Descargar la app
 Ve a la pestana **Releases** del repositorio y descarga (X.Y.Z es la version):
-- **Windows**: `Compresorfree-X.Y.Z-windows-x64.zip` -> descomprimir y abrir `Compresorfree.exe`.
+- **Windows (recomendado)**: `Compresorfree-Setup-X.Y.Z.exe` -> instalador por usuario (no pide administrador) que permite actualizar desde la propia app.
+- **Windows (portable)**: `Compresorfree-X.Y.Z-windows-x64.zip` -> descomprimir y abrir `Compresorfree.exe`.
 - **Mac (M1/M2/M3...)**: `Compresorfree-X.Y.Z-macos-arm64.dmg`
 - **Mac (Intel)**: `Compresorfree-X.Y.Z-macos-x64.dmg`
 
-Cada release incluye `manifest.json` (SHA-256 de cada paquete) y su firma
-`manifest.json.minisig`, hecha por el propietario con una clave que nunca esta en GitHub.
+Cada release incluye `manifest.json` (SHA-256 de cada paquete y las notas de la version) y,
+si el propietario la firmo, `manifest.json.minisig`.
 
 No hace falta instalar Python ni FFmpeg: todo va incluido.
 
@@ -50,51 +51,42 @@ No hace falta instalar Python ni FFmpeg: todo va incluido.
 >   Si dice que "esta danada": `xattr -cr /Applications/Compresorfree.app` en la Terminal.
 
 ## Actualizaciones
-La app busca actualizaciones sola al abrirse (y con el boton **Buscar actualizaciones**).
-Si hay una version nueva, avisa y ofrece **abrir la pagina de descarga**: no descarga ni
-instala nada por su cuenta. Solo anuncia releases que traen un manifiesto firmado y
-comprueba la firma con las claves publicas de `claves_confianza.py`; si la firma no es
-valida, avisa de que no se pudo verificar y recomienda descargar solo desde la pagina
-oficial. Mientras hay una compresion en curso no se ofrece nada.
+La app busca actualizaciones sola al abrirse (y con el boton **Buscar actualizaciones**) y
+muestra las notas de la version nueva (`CHANGELOG.md`). Las pre-releases (`1.3.0-rc.1`) no se
+ofrecen. Los detalles de la verificacion (SHA-256 del manifiesto y firma opcional con las
+claves de `claves_confianza.py`) y de la instalacion automatica estan en el codigo de
+`actualizador.py`. Mientras hay una compresion en curso no se ofrece nada.
 
 ### Publicar una version (solo el propietario)
-Ninguna clave privada ni secreto de firma se sube nunca a GitHub. GitHub Actions solo
-compila y deja la release en **borrador**; el propietario la firma sin red y la publica.
-Todo el proceso (crear las claves, guardarlas y firmar) esta en
-[docs/GUIA_FIRMA.md](docs/GUIA_FIRMA.md).
+Como en SIG-FT: un tag o *Run workflow* publica la release. La firma es **opcional** y
+posterior; ninguna clave privada se sube nunca a GitHub (ver [docs/GUIA_FIRMA.md](docs/GUIA_FIRMA.md)).
 
-1. **Borrador**: sube tus cambios a `main` y lanza la version (siempre mayor que la anterior):
+1. Anade el bloque `## X.Y.Z - AAAA-MM-DD` a `CHANGELOG.md` (son las notas de la release;
+   sin ese bloque el workflow falla) y sube tus cambios a `main`.
+2. **Publicar**, con una de estas dos opciones (la version siempre mayor que la anterior):
    - **Desde la web**: pestana *Actions* -> *Compilar apps (Windows y macOS)* -> *Run workflow*,
-     escribe la version (ej. `1.1.0`) y pulsa *Run workflow*.
-   - **Con git**: `git tag v1.1.0` y `git push origin v1.1.0`.
+     escribe la version (ej. `1.2.0`; con sufijo como `1.3.0-rc.1` para probar) y, si quieres,
+     marca *prerelease*.
+   - **Con git**: `git tag v1.2.0` y `git push origin v1.2.0` (un sufijo `-rc.1` la marca
+     como pre-release).
 
-   Actions pasa las pruebas, compila Windows y Mac y crea la release `v1.1.0` en borrador
-   con los tres paquetes. La version que muestra la app sale de ese numero (no hace falta
-   editar `version.py`).
-2. **Preparar** (con [GitHub CLI](https://cli.github.com/) y `gh auth login`):
+   Actions pasa las pruebas, compila Windows (zip e instalador `.exe`) y Mac, genera
+   `manifest.json` y **publica** la release con las notas del CHANGELOG. La version que
+   muestra la app sale de ese numero (no hace falta editar `version.py`).
+3. **Firma (opcional)**: para que la app marque la release como verificada, descarga y
+   firma el manifiesto sin red y sube la firma:
    ```bash
-   python herramientas/preparar_release.py v1.1.0
+   python herramientas/preparar_release.py v1.2.0
+   minisign -S -s <ruta_usb>/principal.key -m release-v1.2.0/manifest.json \
+     -t "compresorfree tipo=release version=1.2.0"
+   python herramientas/publicar_release.py --solo-firma v1.2.0
    ```
-   Descarga los paquetes a `release-v1.1.0/`, calcula sus SHA-256, escribe
-   `release-v1.1.0/manifest.json`, lista los cambios en `.github/workflows/` desde la
-   ultima release (revisalos) e imprime el comando de firma.
-3. **Firmar sin red**: en el equipo de firma, desconectado, con la clave en el USB:
-   ```bash
-   minisign -S -s <ruta_usb>/principal.key -m release-v1.1.0/manifest.json \
-     -t "compresorfree tipo=release version=1.1.0"
-   ```
-   Esto crea `release-v1.1.0/manifest.json.minisig`.
-4. **Publicar**:
-   ```bash
-   python herramientas/publicar_release.py v1.1.0
-   ```
-   Verifica la firma con `claves_confianza.py`, comprueba que el manifiesto coincida con los
-   paquetes (los locales y los del borrador en GitHub), sube el manifiesto y su firma y
-   publica la release. Si algo no cuadra, no sube nada.
+   `preparar_release.py` descarga la release a `release-v1.2.0/` y comprueba el manifiesto;
+   `publicar_release.py --solo-firma` verifica la firma localmente con `claves_confianza.py`
+   y solo entonces sube `manifest.json.minisig`.
 
-Una release publicada sin manifiesto firmado no se anuncia en la app.
 En cada push a `main` tambien se compilan las apps (pestana *Actions*, como artefactos
-`Compresorfree-0.0.0-dev-...`) para probarlas antes de publicar.
+`Compresorfree-0.0.0-dev-...`) sin crear release, para probarlas antes de publicar.
 
 ## Compilar en tu computadora
 ```bash

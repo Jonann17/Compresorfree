@@ -27,16 +27,19 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 ROLES = ("principal", "respaldo")
 TIPOS = ("release", "rotacion")
-ASSETS_ESPERADOS = (("windows", "x64", "zip"), ("macos", "arm64", "dmg"), ("macos", "x64", "dmg"))
+ASSETS_ESPERADOS = (("windows", "x64", "zip"), ("windows", "x64", "exe"),
+                    ("macos", "arm64", "dmg"), ("macos", "x64", "dmg"))
 MAX_ENTRADAS_ZIP = 20000
 RAIZ_ZIP = "Compresorfree"
 
-_SEMVER = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+_SEMVER = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+                     r"(?:-([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*))?")
 _HEX40 = re.compile(r"[0-9a-f]{40}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _ID_CLAVE = re.compile(r"[0-9A-F]{1,16}")
 _FECHA = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
+_CAMPOS_OPCIONALES = {"notas"}
 _CAMPOS = {"schema", "app", "canal", "tipo", "version", "tag", "commit", "creado", "assets"}
 _CAMPOS_ASSET = {"os", "arch", "formato", "nombre", "sha256", "tamano", "tamano_expandido_max"}
 _CAMPOS_CLAVE = {"id", "rol", "publica"}
@@ -142,18 +145,28 @@ def es_semver(version):
     return isinstance(version, str) and _SEMVER.fullmatch(version) is not None
 
 
-def _tupla(version):
-    return tuple(int(p) for p in _SEMVER.fullmatch(version).groups())
+def _clave_semver(version):
+    """Clave de orden SemVer: (X, Y, Z, final, identificadores de pre-release).
+
+    Una pre-release es menor que su version final (1.3.0-rc.1 < 1.3.0)."""
+    *numeros, pre = _SEMVER.fullmatch(version).groups()
+    base = tuple(int(n) for n in numeros)
+    if pre is None:
+        return base + (1, ())
+    ids = tuple((0, int(i), "") if i.isdigit() else (1, 0, i) for i in pre.split("."))
+    return base + (0, ids)
 
 
 def es_mas_nueva(version, actual):
     if not es_semver(version):
         return False
-    base = _tupla(actual) if es_semver(actual) else (0, 0, 0)
-    return _tupla(version) > base
+    base = _clave_semver(actual) if es_semver(actual) else (0, 0, 0, 0, ())
+    return _clave_semver(version) > base
 
 
 def nombre_asset(version, os_, arch, formato):
+    if formato == "exe":
+        return f"Compresorfree-Setup-{version}.exe"
     return f"Compresorfree-{version}-{os_}-{arch}.{formato}"
 
 
@@ -183,15 +196,18 @@ def _validar_asset(asset, version):
     _exigir(isinstance(asset, dict) and set(asset) == _CAMPOS_ASSET, "asset con campos incorrectos")
     _exigir(asset["os"] in ("windows", "macos"), "os invalido")
     _exigir(asset["arch"] in ("x64", "arm64"), "arch invalida")
-    _exigir(asset["formato"] in ("zip", "dmg"), "formato invalido")
+    _exigir(asset["formato"] in ("zip", "dmg", "exe"), "formato invalido")
+    _exigir(asset["formato"] != "exe" or (asset["os"], asset["arch"]) == ("windows", "x64"),
+            "el formato exe solo existe para windows x64")
     _exigir(asset["nombre"] == nombre_asset(version, asset["os"], asset["arch"], asset["formato"]),
             "nombre de asset invalido")
     _exigir(isinstance(asset["sha256"], str) and _HEX64.fullmatch(asset["sha256"]), "sha256 invalido")
     _exigir(_entero(asset["tamano"]) and asset["tamano"] > 0, "tamano invalido")
     maximo = asset["tamano_expandido_max"]
     _exigir(_entero(maximo) and maximo >= asset["tamano"], "tamano_expandido_max invalido")
-    if asset["formato"] == "dmg":
-        _exigir(maximo == asset["tamano"], "tamano_expandido_max de un dmg debe ser su tamano")
+    if asset["formato"] in ("dmg", "exe"):
+        _exigir(maximo == asset["tamano"],
+                f"tamano_expandido_max de un {asset['formato']} debe ser su tamano")
 
 
 def _validar_clave(clave):
@@ -222,11 +238,13 @@ def cargar_manifiesto(datos):
     tipo = m.get("tipo")
     _exigir(tipo in TIPOS, "tipo invalido")
     esperados = _CAMPOS | {"claves"} if tipo == "rotacion" else _CAMPOS
-    _exigir(set(m) == esperados, "campos incorrectos")
+    _exigir(esperados <= set(m) <= esperados | _CAMPOS_OPCIONALES, "campos incorrectos")
+    if "notas" in m:
+        _exigir(isinstance(m["notas"], str), "notas no es texto")
     _exigir(_entero(m["schema"]) and m["schema"] == 1, "schema no soportado")
     _exigir(m["app"] == "Compresorfree", "app incorrecta")
     _exigir(m["canal"] == "estable", "canal incorrecto")
-    _exigir(es_semver(m["version"]), "version no es X.Y.Z")
+    _exigir(es_semver(m["version"]), "version no es SemVer")
     _exigir(m["tag"] == "v" + m["version"], "tag no coincide con la version")
     _exigir(isinstance(m["commit"], str) and _HEX40.fullmatch(m["commit"]), "commit invalido")
     _exigir(isinstance(m["creado"], str) and _FECHA.fullmatch(m["creado"]), "fecha invalida")
@@ -244,8 +262,8 @@ def cargar_manifiesto(datos):
         _exigir(assets == [], "una rotacion no puede llevar paquetes")
     for asset in assets:
         _validar_asset(asset, m["version"])
-    sistemas = [(a["os"], a["arch"]) for a in assets]
-    _exigir(len(sistemas) == len(set(sistemas)), "asset repetido para un mismo sistema")
+    sistemas = [(a["os"], a["arch"], a["formato"]) for a in assets]
+    _exigir(len(sistemas) == len(set(sistemas)), "asset repetido para un mismo sistema y formato")
 
     if tipo == "rotacion":
         claves = m["claves"]
@@ -277,15 +295,20 @@ def verificar_manifiesto(datos, minisig, claves):
 
 # ------------------------------------------------------------------ Paquetes
 
-def asset_para_sistema(manifiesto, os_=None, arch=None):
+def asset_para_sistema(manifiesto, os_=None, arch=None, formato=None):
     if manifiesto.get("tipo") != "release":
         raise VerificacionFallida("solo una release ofrece paquetes")
     if os_ is None:
         os_ = {"win32": "windows", "darwin": "macos"}.get(sys.platform)
     if arch is None:
         arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
-    return next((a for a in manifiesto.get("assets", [])
-                 if a["os"] == os_ and a["arch"] == arch), None)
+    candidatos = [a for a in manifiesto.get("assets", [])
+                  if a["os"] == os_ and a["arch"] == arch]
+    for preferido in ((formato,) if formato else ("exe", "dmg", "zip")):
+        for a in candidatos:
+            if a["formato"] == preferido:
+                return a
+    return None
 
 
 def verificar_archivo(ruta, asset):
