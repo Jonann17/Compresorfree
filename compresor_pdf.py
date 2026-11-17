@@ -4,6 +4,7 @@ Si Ghostscript esta instalado se usa (mejor resultado). Si no, se recomprimen
 las imagenes del PDF con pikepdf + Pillow (pip install pikepdf pillow).
 """
 
+import errno
 import io
 import os
 import shutil
@@ -34,6 +35,8 @@ def buscar_ghostscript():
 
 
 def _comando_ghostscript(gs, entrada, salida, cfg):
+    # Ghostscript trata %d, %03d... de la salida como plantillas de pagina.
+    salida = salida.replace("%", "%%")
     return [
         gs, "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.5",
         f"-dPDFSETTINGS={cfg['gs']}", "-dNOPAUSE", "-dQUIET", "-dBATCH",
@@ -48,6 +51,8 @@ def _comprimir_ghostscript(gs, entrada, salida, cfg, cancelar=None):
         env = dict(os.environ, TMPDIR=tmp, TEMP=tmp, TMP=tmp)
         r = procesos.ejecutar(_comando_ghostscript(gs, entrada, salida, cfg), cancelar, env=env)
     if r.returncode != 0:
+        if "No space left on device" in r.stderr:
+            raise nucleo.EspacioInsuficiente(nucleo.MENSAJE_DISCO_LLENO)
         raise RuntimeError(f"Ghostscript fallo:\n{r.stderr[-1500:]}")
 
 
@@ -201,12 +206,21 @@ def comprimir(entrada, salida=None, nivel="media", progreso=None, cancelar=None,
         raise nucleo.ArchivoOmitido(f"Se omitio: PDF {motivo}.")
     paginas = _contar_paginas(entrada)
 
+    # El resultado nunca supera la entrada: si pesa mas, se conserva el original.
+    nucleo.comprobar_espacio(os.path.dirname(os.path.abspath(salida)),
+                             os.path.getsize(entrada) + nucleo.MARGEN_ESPACIO)
+
     with nucleo.salida_temporal(salida) as tmp:
         gs = buscar_ghostscript()
-        if gs:
-            _comprimir_ghostscript(gs, entrada, tmp, cfg, cancelar)
-        else:
-            _comprimir_pikepdf(entrada, tmp, cfg, progreso, cancelar)
+        try:
+            if gs:
+                _comprimir_ghostscript(gs, entrada, tmp, cfg, cancelar)
+            else:
+                _comprimir_pikepdf(entrada, tmp, cfg, progreso, cancelar)
+        except OSError as e:
+            if e.errno == errno.ENOSPC:
+                raise nucleo.EspacioInsuficiente(nucleo.MENSAJE_DISCO_LLENO) from e
+            raise
 
         # Si el PDF ya estaba optimizado y el resultado pesa mas, se conserva el original.
         if os.path.getsize(tmp) > os.path.getsize(entrada):

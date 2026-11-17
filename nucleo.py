@@ -16,6 +16,7 @@ import ctypes
 import ctypes.util
 import errno
 import os
+import shutil
 import sys
 import uuid
 
@@ -30,6 +31,26 @@ class PublicacionNoSegura(OSError):
 
 class ArchivoOmitido(Exception):
     """El archivo no se procesa a proposito (por ejemplo, un PDF firmado)."""
+
+
+class EspacioInsuficiente(OSError):
+    """No queda espacio en el disco de destino."""
+
+
+# Colchon que debe quedar libre ademas del tamano que se espera escribir.
+MARGEN_ESPACIO = 50 * 1024 * 1024
+
+MENSAJE_DISCO_LLENO = ("Se lleno el disco de destino mientras se comprimia; "
+                       "no se guardo nada.")
+
+
+def comprobar_espacio(carpeta, necesario_bytes):
+    """Lanza EspacioInsuficiente si en `carpeta` quedan menos de `necesario_bytes`."""
+    libre = shutil.disk_usage(carpeta).free
+    if libre < necesario_bytes:
+        raise EspacioInsuficiente(
+            f"No hay espacio suficiente en {carpeta}: hacen falta unos "
+            f"{necesario_bytes / 1048576:.0f} MB y quedan {libre / 1048576:.0f} MB.")
 
 
 # ---------------------------------------------------------------- Rutas

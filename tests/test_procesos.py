@@ -120,7 +120,10 @@ def test_procesos_vivos_durante_y_despues():
     def cb(linea):
         visto.extend(procesos.procesos_vivos())
 
-    procesos.ejecutar(hijo("print('hola')"), on_stdout_linea=cb)
+    # El hijo sigue vivo un rato tras imprimir: si terminara enseguida, con la CPU
+    # cargada podria salir antes de que se lea su linea y la prueba fallaria sin motivo.
+    procesos.ejecutar(hijo("import time; print('hola', flush=True); time.sleep(1)"),
+                      on_stdout_linea=cb)
     assert len(visto) == 1 and isinstance(visto[0], subprocess.Popen)
     assert procesos.procesos_vivos() == []
 
