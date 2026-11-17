@@ -1,6 +1,7 @@
 # Dependencias de pruebas y lint (se instalan junto con requirements.lock).
 iniconfig==2.3.1
-numpy==2.5.3
+numpy==2.5.3; python_version >= "3.11"
+numpy==2.2.6; python_version < "3.11"
 pluggy==1.7.0
 pygments==2.21.0
 pytest==9.2.0
