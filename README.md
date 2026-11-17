@@ -127,6 +127,8 @@ Interfaz grafica para comprimir:
   - `python app.py video.mkv -n alta -o salida.mp4`
   - `python app.py documento.pdf -n media`
   - Varios a la vez: `python app.py video1.avi video2.mov video3.mkv -n media -d carpeta_salida`
+  - Video a un tamano maximo (dos pasadas, p. ej. WhatsApp 16 MB): `python app.py video.mkv --max-mb 16`
+    (en la interfaz: campo "Tamano maximo (MB)" y botones rapidos; si el video es demasiado largo da un error claro).
   - Solo ver el peso estimado: `python app.py video1.avi documento.pdf -n alta --estimar`
   - Solo se aceptan videos (avi, mkv, mov, mp4...) y PDF: un archivo de otro formato
     (por ejemplo `.jpg`) da el aviso "formato no soportado", cuenta como error y el resto sigue.

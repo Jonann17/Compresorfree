@@ -298,10 +298,50 @@ def _iniciar_gui():
     if compresor_pdf.buscar_ghostscript() is None:
         chk_agresiva.state(["disabled"])
 
-    def opciones_motor(tipo):
-        """Solo afecta a PDF; en video no se pasa nada."""
-        if tipo != "pdf":
+    var_max_mb = tk.StringVar(value="")
+    fila_max = ttk.Frame(grupo)
+    fila_max.pack(anchor="w", pady=(6, 0))
+    ttk.Label(fila_max, text="Tamano maximo (MB), solo video:").pack(side="left")
+    entrada_max = ttk.Entry(fila_max, textvariable=var_max_mb, width=7)
+    entrada_max.pack(side="left", padx=4)
+    botones_max = [ttk.Button(fila_max, text=t, command=lambda v=v: var_max_mb.set(v))
+                   for t, v in (("WhatsApp 16 MB", "16"), ("Correo 25 MB", "25"))]
+    for b in botones_max:
+        b.pack(side="left", padx=2)
+    var_max_mb.trace_add("write", lambda *_: borrar_estimados())
+
+    def objetivo_mb():
+        """MB indicados (float) o None; ValueError si el texto no es valido."""
+        texto = var_max_mb.get().strip().replace(",", ".")
+        if not texto:
+            return None
+        valor = float(texto)
+        if not valor > 0:
+            raise ValueError(texto)
+        return valor
+
+    def extra_video(tipo):
+        if tipo != "video":
             return {}
+        try:
+            mb = objetivo_mb()
+        except ValueError:
+            messagebox.showwarning("Tamano maximo", "Indica un numero de MB mayor que 0.")
+            raise
+        return {"objetivo_mb": mb} if mb else {}
+
+    def actualizar_max(*_):
+        estado = ["!disabled"] if var_tipo.get() == "video" else ["disabled"]
+        for w in (entrada_max, *botones_max):
+            w.state(estado)
+
+    var_tipo.trace_add("write", actualizar_max)
+    actualizar_max()
+
+    def opciones_motor(tipo):
+        """PDF: motor; video: tamano maximo opcional."""
+        if tipo != "pdf":
+            return extra_video(tipo)
         return {"motor": "ghostscript" if var_agresiva.get() else "pikepdf"}
 
     barra = ttk.Progressbar(marco, length=420, maximum=100)
@@ -379,7 +419,10 @@ def _iniciar_gui():
         tipo, nivel = var_tipo.get(), var_nivel.get()
         salidas = rutas_salida(entradas, tipo, nivel, var_carpeta.get() or None)
         modulo = TIPOS[tipo]["modulo"]
-        extra = opciones_motor(tipo)
+        try:
+            extra = opciones_motor(tipo)
+        except ValueError:
+            return
         total = len(filas)
 
         cancelar.clear()
@@ -442,7 +485,10 @@ def _iniciar_gui():
         filas = list(lista.get_children())
         modulo = TIPOS[var_tipo.get()]["modulo"]
         nivel = var_nivel.get()
-        extra = opciones_motor(var_tipo.get())
+        try:
+            extra = opciones_motor(var_tipo.get())
+        except ValueError:
+            return
         cancelar.clear()
         bloquear(True)
         barra["value"] = 0
@@ -601,6 +647,8 @@ def _extra_cli(args, entrada):
     """Argumentos extra del modulo: --motor solo aplica a PDF."""
     if tipo_por_extension(entrada) == "pdf":
         return {"motor": args.motor}
+    if args.max_mb:
+        return {"objetivo_mb": args.max_mb}
     return {}
 
 
@@ -617,7 +665,11 @@ def main():
                         help="Nivel de compresion (por defecto: media)")
     parser.add_argument("--motor", choices=["pikepdf", "ghostscript"], default="pikepdf",
                         help="Motor de PDF: pikepdf (conservador, por defecto) o ghostscript (agresivo)")
+    parser.add_argument("--max-mb", type=float, metavar="N",
+                        help="Video: tamano maximo en MB (codifica en dos pasadas)")
     args = parser.parse_args()
+    if args.max_mb is not None and not args.max_mb > 0:
+        parser.error("--max-mb debe ser mayor que 0")
 
     if not args.entradas:
         iniciar_gui()
