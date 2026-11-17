@@ -116,7 +116,11 @@ def test_no_se_llama_remove_unreferenced(pdf_fotos, tmp_path, monkeypatch):
 
 def _comprimir_y_comparar(tmp_path, entrada):
     antes = _bytes_imagen(entrada)
-    salida = compresor_pdf.comprimir(entrada, str(tmp_path / "out.pdf"), "alta")
+    try:
+        salida = compresor_pdf.comprimir(entrada, str(tmp_path / "out.pdf"), "alta")
+    except nucleo.SinMejora:  # nada que recomprimir: no se crea salida, el original queda
+        assert not (tmp_path / "out.pdf").exists()
+        return antes, antes
     return antes, _bytes_imagen(salida)
 
 
