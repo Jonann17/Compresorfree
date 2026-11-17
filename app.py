@@ -541,6 +541,9 @@ def _iniciar_gui():
 
     # ------------------------------------------------------------ Actualizaciones
 
+    actualizando = [False]  # descarga/instalacion en curso (dialogo abierto)
+    cancelar_descarga = threading.Event()
+
     def ofrecer_actualizacion(info, manual):
         btn_actualizar.config(state="normal")
         if cerrando or (info is not None and tarea_en_curso()):
@@ -554,19 +557,136 @@ def _iniciar_gui():
             if manual:
                 messagebox.showinfo("Actualizaciones", f"Ya tienes la ultima version ({VERSION}).")
             return
-        if info["verificada"]:
-            # Las notas de la release no estan firmadas: se leen en la pagina, no aqui.
-            texto = (f"Hay una version nueva verificada: {info['version']} (tienes {VERSION}). "
-                     "Las novedades estan en la pagina de la version.")
-        else:
-            # Sin firma valida las notas tampoco son de fiar: no se muestran.
-            texto = (f"Hay una version nueva ({info['version']}), pero no se pudo verificar "
-                     "su firma. Descargala solo desde la pagina oficial de Compresorfree "
-                     "en GitHub.")
-        if messagebox.askyesno("Nueva version disponible",
-                               texto + "\n\nAbrir la pagina de descarga?"):
-            import webbrowser
-            webbrowser.open(info["url_pagina"])
+        if actualizando[0]:
+            return
+        dialogo_actualizacion(info)
+
+    def dialogo_actualizacion(info):
+        asset = info.get("asset")
+        auto = bool(info.get("auto") and asset and actualizador.puede_autoinstalar())
+        dlg = tk.Toplevel(ventana, name="dlg_actualizacion", padx=12, pady=12)
+        dlg.title("Nueva version disponible")
+        dlg.transient(ventana)
+        dlg.resizable(False, False)
+        resumen_ver = f"Compresorfree {VERSION}  ->  {info['version']}"
+        detalle = [d for d in (info.get("fecha") or "",
+                               f"{asset['tamano'] / 1048576:.1f} MB" if asset else "") if d]
+        ttk.Label(dlg, text=resumen_ver, font=("TkDefaultFont", 11, "bold")).pack(anchor="w")
+        if detalle:
+            ttk.Label(dlg, text="  -  ".join(detalle)).pack(anchor="w")
+        if not info.get("verificada") and not info.get("auto"):
+            ttk.Label(dlg, foreground="#b00020", wraplength=420, justify="left",
+                      text="No se pudo verificar la firma de esta version. Descargala solo "
+                           "desde la pagina oficial de Compresorfree en GitHub.").pack(
+                anchor="w", pady=(6, 0))
+        zona = ttk.Frame(dlg, name="zona_notas")
+        zona.pack(fill="both", expand=True, pady=8)
+        txt = tk.Text(zona, width=60, height=12, wrap="word", name="txt_notas")
+        sb = ttk.Scrollbar(zona, orient="vertical", command=txt.yview)
+        txt.config(yscrollcommand=sb.set)
+        txt.insert("1.0", info.get("notas") or "Sin notas para esta version.")
+        txt.config(state="disabled")
+        txt.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        barra_d = ttk.Progressbar(dlg, mode="determinate", maximum=100)
+        var_d = tk.StringVar(value="")
+        ttk.Label(dlg, textvariable=var_d).pack(anchor="w")
+        fila_b = ttk.Frame(dlg, name="botones")
+        fila_b.pack(fill="x", pady=(8, 0))
+        btn_si = ttk.Button(fila_b, name="btn_actualizar_ahora",
+                            text="Actualizar ahora" if auto else "Abrir pagina de descarga")
+        btn_no = ttk.Button(fila_b, name="btn_ahora_no", text="Ahora no")
+        btn_cancel_d = ttk.Button(fila_b, name="btn_cancelar_descarga", text="Cancelar")
+
+        def cerrar_dialogo():
+            actualizando[0] = False
+            with contextlib.suppress(tk.TclError):
+                dlg.grab_release()
+                dlg.destroy()
+
+        def volver(mensaje=None):
+            """Restaura el dialogo tras un fallo o cancelacion."""
+            if cerrando:
+                return
+            actualizando[0] = False
+            barra_d.pack_forget()
+            btn_cancel_d.pack_forget()
+            var_d.set(mensaje or "")
+            btn_si.config(state="normal")
+            btn_no.config(state="normal")
+
+        def progreso_ui(leidos, total):
+            barra_d.config(value=100 * leidos / total)
+            var_d.set(f"Descargando... {leidos / 1048576:.1f} / {total / 1048576:.1f} MB")
+
+        def trabajo_descarga():
+            try:
+                ruta = actualizador.descargar(
+                    asset, actualizador.dir_descargas(),
+                    lambda a, b: en_ui(progreso_ui, a, b), cancelar_descarga)
+                en_ui(var_d.set, "Preparando la instalacion...")
+                resultado = actualizador.instalar(ruta)
+            except actualizador.Cancelado:
+                en_ui(volver, "Descarga cancelada.")
+                return
+            except Exception as e:  # noqa: BLE001
+                msg = str(e) or type(e).__name__
+
+                def fallo():
+                    volver()
+                    messagebox.showerror("Actualizaciones",
+                                         f"No se pudo actualizar:\n{msg}", parent=dlg)
+                en_ui(fallo)
+                return
+            en_ui(terminada, resultado)
+
+        def terminada(resultado):
+            if cerrando:
+                return
+            if resultado == "cerrar":
+                # El instalador ya arranco: se cierra por el camino normal (sin tarea).
+                cerrar_dialogo()
+                al_cerrar()
+                return
+            cerrar_dialogo()
+            messagebox.showinfo(
+                "Actualizar Compresorfree",
+                "Se abrio la imagen de disco. Cierra Compresorfree y arrastra Compresorfree a "
+                "la carpeta Aplicaciones, reemplazando la version anterior.")
+
+        def aceptar():
+            if not auto:
+                import webbrowser
+                webbrowser.open(info["url_pagina"])
+                cerrar_dialogo()
+                return
+            actualizando[0] = True
+            cancelar_descarga.clear()
+            btn_si.config(state="disabled")
+            btn_no.config(state="disabled")
+            barra_d.config(value=0)
+            barra_d.pack(fill="x", before=fila_b)
+            btn_cancel_d.pack(side="right")
+            var_d.set("Descargando...")
+            threading.Thread(target=trabajo_descarga, daemon=True).start()
+
+        def cancelar_d():
+            cancelar_descarga.set()
+            btn_cancel_d.config(state="disabled")
+
+        def cerrar_x():
+            if actualizando[0]:
+                return  # durante la descarga solo vale Cancelar
+            cerrar_dialogo()
+
+        btn_si.config(command=aceptar)
+        btn_no.config(command=cerrar_dialogo)
+        btn_cancel_d.config(command=cancelar_d)
+        btn_no.pack(side="right")
+        btn_si.pack(side="right", padx=4)
+        dlg.protocol("WM_DELETE_WINDOW", cerrar_x)
+        with contextlib.suppress(tk.TclError):
+            dlg.grab_set()
 
     def buscar_actualizacion(manual=False):
         btn_actualizar.config(state="disabled")
@@ -595,6 +715,7 @@ def _iniciar_gui():
         nonlocal cerrando
         if cerrando or dialogo_cierre[0]:
             return
+        cancelar_descarga.set()
         guardar_prefs()
         if not tarea_en_curso():
             ventana.destroy()
@@ -634,6 +755,7 @@ def _iniciar_gui():
         ventana.createcommand("::tk::mac::Quit", al_cerrar)
     ventana.after(50, vaciar_cola_ui)
     ventana.after(1500, buscar_actualizacion)  # busca en silencio al abrir la app
+    threading.Thread(target=actualizador.limpiar_descargas, daemon=True).start()
     ventana.mainloop()
     if hilo_tarea is not None:
         # Se espera aqui (y no en el cierre del interprete) para que los objetos de

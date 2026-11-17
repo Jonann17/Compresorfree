@@ -276,7 +276,7 @@ def test_falta_campo_obligatorio(campo):
         cargar(m)
 
 
-@pytest.mark.parametrize("version", ["1.2", "1.2.3.4", "v1.2.0", "1.2.0-beta", "a.b.c",
+@pytest.mark.parametrize("version", ["1.2", "1.2.3.4", "v1.2.0", "1.2.0-", "1.2.0-a..b", "a.b.c",
                                      "01.2.0x", "", "1.2.0\n"])
 def test_version_no_semver(version):
     m = manifiesto_valido(version="1.2.0")
@@ -382,7 +382,14 @@ def test_no_utf8_y_no_objeto():
     ("1.0.9", "1.1.0", False),       # downgrade
     ("1.10.0", "1.9.0", True),       # comparacion numerica, no de texto
     ("0.0.1", "0.0.0-dev", True),
-    ("0.0.0", "0.0.0-dev", False),
+    ("0.0.0", "0.0.0-dev", True),     # la final supera a su pre-release
+    ("1.3.0-rc.1", "1.3.0", False),
+    ("1.3.0", "1.3.0-rc.1", True),
+    ("1.3.0-rc.2", "1.3.0-rc.1", True),
+    ("1.3.0-rc.10", "1.3.0-rc.2", True),   # numerico, no de texto
+    ("1.3.0-rc.1", "1.3.0-beta.9", True),
+    ("1.3.0-rc", "1.3.0-rc.1", False),     # prefijo comun: el mas corto es menor
+    ("1.3.0-1", "1.3.0-alfa", False),      # numerico < alfanumerico
     ("1.0.0", "0.0.0-dev", True),
     ("2.0.0", "1.99.99", True),
     ("1.2.0", "raro", True),         # actual no estricta cuenta como 0.0.0
@@ -392,7 +399,7 @@ def test_es_mas_nueva(version, actual, esperado):
 
 
 def test_es_mas_nueva_rechaza_version_no_estricta():
-    for v in ("1.2", "v1.2.0", "1.2.0-beta", ""):
+    for v in ("1.2", "v1.2.0", "1.2.0-", "1.2.0-be ta", "1.2.0-b..c", ""):
         try:
             assert verificacion.es_mas_nueva(v, "0.0.0") is False
         except VerificacionFallida:
@@ -750,3 +757,59 @@ def test_validar_zip_con_subcarpetas_correcto_se_acepta(tmp_path):
     ])
     # Carpetas implicitas (sin entrada de carpeta) y carpetas declaradas despues.
     _acepta_zip(tmp_path, ["Compresorfree/a/b.txt", "Compresorfree/a/", "Compresorfree/a/c.txt"])
+
+
+# ---------- Ampliaciones: sufijo de pre-release, notas, formato exe ----------
+
+def _asset_exe(version="1.2.0", **cambios):
+    a = {"os": "windows", "arch": "x64", "formato": "exe",
+         "nombre": f"Compresorfree-Setup-{version}.exe",
+         "sha256": "d" * 64, "tamano": 5000, "tamano_expandido_max": 5000}
+    a.update(cambios)
+    return a
+
+
+def test_version_con_sufijo_de_prerelease_es_valida():
+    m = manifiesto_valido("1.3.0-rc.1")
+    assert cargar(m)["version"] == "1.3.0-rc.1"
+    assert verificacion.es_semver("1.3.0-rc.1")
+
+
+def test_notas_son_opcionales_y_deben_ser_texto():
+    assert cargar(manifiesto_valido(notas="- cambio uno"))["notas"] == "- cambio uno"
+    cargar(manifiesto_valido())
+    for mala in (5, None, ["a"], "x" * (verificacion.MAX_NOTAS + 1)):
+        with pytest.raises(VerificacionFallida):
+            cargar(manifiesto_valido(notas=mala))
+
+
+def test_exe_y_zip_pueden_convivir_para_windows_x64():
+    m = manifiesto_valido()
+    m["assets"].append(_asset_exe())
+    cargar(m)
+    assert verificacion.asset_para_sistema(m, "windows", "x64")["formato"] == "exe"
+    assert verificacion.asset_para_sistema(m, "windows", "x64", "zip")["formato"] == "zip"
+
+
+def test_dos_exe_para_el_mismo_sistema_se_rechazan():
+    m = manifiesto_valido()
+    m["assets"] += [_asset_exe(), _asset_exe()]
+    with pytest.raises(VerificacionFallida, match="repetido"):
+        cargar(m)
+
+
+@pytest.mark.parametrize("cambios", [
+    {"tamano_expandido_max": 9000},
+    {"nombre": "Compresorfree-1.2.0-windows-x64.exe"},
+    {"os": "macos"},
+    {"arch": "arm64"},
+])
+def test_exe_invalido(cambios):
+    m = manifiesto_valido()
+    m["assets"].append(_asset_exe(**cambios))
+    with pytest.raises(VerificacionFallida):
+        cargar(m)
+
+
+def test_assets_esperados_incluye_el_exe():
+    assert ("windows", "x64", "exe") in verificacion.ASSETS_ESPERADOS

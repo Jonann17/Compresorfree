@@ -7,6 +7,7 @@ import pytest
 
 import actualizador
 import claves_confianza
+import verificacion
 from firma_util import (Par, firmar, firmar_manifiesto, manifiesto_rotacion, manifiesto_valido,
                         serializar)
 
@@ -36,6 +37,13 @@ def release_json(version="1.2.0", con_manifiesto=True, tag=None):
     return {"tag_name": tag, "body": "Notas de prueba",
             "html_url": f"https://github.com/Jonann17/Compresorfree/releases/tag/{tag}",
             "assets": assets}
+
+
+def _asset_windows(manifiesto, *a, **kw):
+    return _asset_original(manifiesto, "windows", "x64")
+
+
+_asset_original = verificacion.asset_para_sistema
 
 
 @pytest.fixture
@@ -100,11 +108,14 @@ def test_firma_de_clave_ajena_no_es_verificada(red, principal):
     assert actualizador.buscar_actualizacion()["verificada"] is False
 
 
-def test_sin_claves_de_confianza_no_es_verificada(red, principal, monkeypatch):
+def test_sin_claves_de_confianza_no_es_verificada_pero_si_automatica(red, principal, monkeypatch):
     monkeypatch.setattr(claves_confianza, "CLAVES", [])
+    monkeypatch.setattr(verificacion, "asset_para_sistema", _asset_windows)
     datos, minisig = firmar_manifiesto(principal, manifiesto_valido("1.2.0"))
     publicar(red, release_json("1.2.0"), datos, minisig)
-    assert actualizador.buscar_actualizacion()["verificada"] is False
+    r = actualizador.buscar_actualizacion()
+    assert r["verificada"] is False and r["auto"] is True
+    assert r["asset"]["nombre"] == "Compresorfree-1.2.0-windows-x64.zip"
 
 
 def test_manipulado_con_tag_no_semver_devuelve_none(red, principal):
@@ -138,20 +149,20 @@ def test_sin_manifiesto_devuelve_none(red, principal):
     assert red["pedidas"] == [API]  # no intenta descargar nada mas
 
 
-def test_solo_manifiesto_sin_firma_devuelve_none(red, principal):
+def test_con_claves_y_sin_firma_no_es_automatica(red, principal):
+    datos, _ = firmar_manifiesto(principal, manifiesto_valido("1.2.0"))
     r = release_json("1.2.0")
     r["assets"] = [a for a in r["assets"] if a["name"] != "manifest.json.minisig"]
     publicar(red, r)
-    assert actualizador.buscar_actualizacion() is None
+    red[f"{BASE}/v1.2.0/manifest.json"] = datos
+    assert actualizador.buscar_actualizacion() == _esperado_no_verificado()
 
 
 def test_tag_de_la_release_distinto_del_manifiesto_no_es_verificado(red, principal):
     """Manifiesto firmado de 1.2.0 reutilizado en la release v1.3.0."""
     datos, minisig = firmar_manifiesto(principal, manifiesto_valido("1.2.0"))
     publicar(red, release_json("1.3.0"), datos, minisig)
-    assert actualizador.buscar_actualizacion() == {
-        "version": "1.3.0", "notas": "Notas de prueba",
-        "url_pagina": actualizador.url_pagina("1.3.0"), "verificada": False}
+    assert actualizador.buscar_actualizacion() == _esperado_no_verificado("1.3.0")
 
 
 def test_release_404_devuelve_none(red, principal):
@@ -159,17 +170,19 @@ def test_release_404_devuelve_none(red, principal):
     assert actualizador.buscar_actualizacion() is None
 
 
-def test_ya_no_existe_la_autoinstalacion():
-    for nombre in ("descargar", "instalar", "nombre_paquete"):
-        assert not hasattr(actualizador, nombre)
+def test_existe_la_autoinstalacion_y_la_pagina_de_respaldo():
+    for nombre in ("descargar", "instalar_windows", "instalar_macos", "puede_autoinstalar",
+                   "limpiar_descargas"):
+        assert callable(getattr(actualizador, nombre))
     assert actualizador.URL_RELEASES
 
 
 # ---------- Pruebas "matadoras de mutantes" ----------
 
 def _esperado_no_verificado(version="1.2.0"):
-    return {"version": version, "notas": "Notas de prueba",
-            "url_pagina": actualizador.url_pagina(version), "verificada": False}
+    return {"version": version, "notas": "Notas de prueba", "fecha": "",
+            "url_pagina": actualizador.url_pagina(version), "verificada": False,
+            "auto": False, "asset": None}
 
 
 @pytest.fixture
