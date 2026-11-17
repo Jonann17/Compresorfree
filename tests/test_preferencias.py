@@ -31,6 +31,7 @@ def test_carpeta_inexistente_se_ignora(tmp_path):
 
 
 def test_ruta_por_plataforma(monkeypatch):
+    monkeypatch.delenv("COMPRESORFREE_CONFIG", raising=False)
     monkeypatch.setattr(preferencias.sys, "platform", "win32")
     monkeypatch.setenv("APPDATA", "C:/Users/x/AppData/Roaming")
     assert preferencias.directorio_config() == os.path.join("C:/Users/x/AppData/Roaming", "Compresorfree")

@@ -10,6 +10,8 @@ DEFECTO = {"tipo": "video", "nivel": "media", "carpeta": ""}
 
 
 def directorio_config():
+    if os.environ.get("COMPRESORFREE_CONFIG"):  # p. ej. pruebas o instalacion portable
+        return os.environ["COMPRESORFREE_CONFIG"]
     if sys.platform == "win32":
         base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
         return os.path.join(base, "Compresorfree")

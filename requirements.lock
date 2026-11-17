@@ -9,3 +9,4 @@ packaging==26.3
 pikepdf==10.13.0.post1
 pillow==12.3.0
 pycparser==3.0
+tkinterdnd2==0.7.0
