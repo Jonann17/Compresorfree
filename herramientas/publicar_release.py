@@ -1,20 +1,19 @@
-"""Verifica la firma del manifiesto y publica la release en borrador.
+"""Sube la firma opcional (manifest.json.minisig) de una release ya publicada.
 
-    python herramientas/publicar_release.py vX.Y.Z [--repo Jonann17/Compresorfree]
+    python herramientas/publicar_release.py --solo-firma vX.Y.Z [--repo Jonann17/Compresorfree]
 
-Necesita release-vX.Y.Z/manifest.json y release-vX.Y.Z/manifest.json.minisig
-(creados con preparar_release.py y firmados sin red). Antes de subir nada:
-verifica la firma con las claves de claves_confianza.py, compara el manifiesto con
-los paquetes locales y con los del borrador en GitHub (descargados de nuevo).
-Requiere el CLI de GitHub (gh) con la sesion iniciada.
+La release la publica GitHub Actions. Si firmaste su manifest.json con minisign
+(docs/GUIA_FIRMA.md), esto verifica la firma LOCALMENTE con las claves de
+claves_confianza.py, comprueba que el manifest.json firmado es identico al publicado
+y solo entonces sube release-vX.Y.Z/manifest.json.minisig. Si algo no cuadra, no sube
+nada. Requiere el CLI de GitHub (gh) con la sesion iniciada.
 """
 
 import argparse
 import os
 import tempfile
 
-from _comun import (REPO, carpeta_release, commit_de_release, fallar, gh, leer_version,
-                    nombres_esperados, ver_release, verificacion)
+from _comun import REPO, carpeta_release, fallar, gh, leer_version, ver_release, verificacion
 
 import claves_confianza  # noqa: E402  (la raiz del repo la anade _comun a sys.path)
 
@@ -22,21 +21,11 @@ MANIFIESTO = "manifest.json"
 FIRMA = "manifest.json.minisig"
 
 
-def comprobar_paquetes(carpeta, manifiesto, que):
-    for asset in manifiesto["assets"]:
-        ruta = os.path.join(carpeta, asset["nombre"])
-        if not os.path.isfile(ruta):
-            fallar(f"falta {asset['nombre']} ({que})")
-        try:
-            verificacion.verificar_archivo(ruta, asset)
-        except verificacion.VerificacionFallida as e:
-            fallar(f"{asset['nombre']} ({que}): {e}")
-        print(f"  OK {asset['nombre']} ({que})")
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("version", help="version de la release, ej. v1.2.0")
+    parser.add_argument("--solo-firma", action="store_true",
+                        help="sube solo la firma (es el unico modo; se admite por claridad)")
     parser.add_argument("--repo", default=REPO)
     args = parser.parse_args()
     version = leer_version(args.version)
@@ -61,43 +50,22 @@ def main():
     print("Firma del manifiesto valida.")
     if manifiesto["tipo"] != "release" or manifiesto["version"] != version:
         fallar(f"el manifiesto no es de la release v{version}")
-    if {a["nombre"] for a in manifiesto["assets"]} != nombres_esperados(version):
-        fallar("el manifiesto no lista exactamente los paquetes esperados")
 
     release = ver_release(version, args.repo)
-    if not release.get("isDraft"):
-        fallar(f"v{version} no es un borrador: ya esta publicada.")
-    if commit_de_release(version, args.repo, release) != manifiesto["commit"]:
-        fallar("el commit del borrador no coincide con el del manifiesto")
-    en_github = {a["name"] for a in release.get("assets", [])}
-    if not en_github <= nombres_esperados(version) | {MANIFIESTO, FIRMA}:
-        fallar(f"el borrador tiene archivos inesperados: {sorted(en_github)}")
+    if release.get("isDraft"):
+        fallar(f"v{version} es un borrador: no esta publicada.")
+    with tempfile.TemporaryDirectory(prefix="compresorfree_firma_") as tmp:
+        gh("release", "download", f"v{version}", "--repo", args.repo, "--dir", tmp,
+           "--pattern", MANIFIESTO)
+        with open(os.path.join(tmp, MANIFIESTO), "rb") as f:
+            publicado = f.read()
+    if publicado != datos:
+        fallar("el manifest.json firmado no es identico al publicado en la release. "
+               "No se ha subido nada.")
 
-    comprobar_paquetes(carpeta, manifiesto, "local")
-    with tempfile.TemporaryDirectory(prefix="compresorfree_publicar_") as tmp:
-        for nombre in sorted(nombres_esperados(version)):
-            gh("release", "download", f"v{version}", "--repo", args.repo, "--dir", tmp,
-               "--pattern", nombre)
-        comprobar_paquetes(tmp, manifiesto, "borrador en GitHub")
-
-    # Justo antes de publicar se vuelve a comprobar el borrador: nadie debe haber
-    # anadido archivos ni cambiado su commit desde las comprobaciones de arriba.
-    ultimo = ver_release(version, args.repo)
-    if (not ultimo.get("isDraft")
-            or {a["name"] for a in ultimo.get("assets", [])} != en_github
-            or commit_de_release(version, args.repo, ultimo) != manifiesto["commit"]):
-        fallar("el borrador cambio durante la publicacion. No se ha publicado nada.")
-
-    print("Subiendo el manifiesto y su firma...")
-    gh("release", "upload", f"v{version}", "--repo", args.repo, "--clobber",
-       ruta_manifiesto, ruta_firma)
-    print("Publicando la release...")
-    ultimo = ver_release(version, args.repo)
-    if ({a["name"] for a in ultimo.get("assets", [])} != en_github | {MANIFIESTO, FIRMA}
-            or commit_de_release(version, args.repo, ultimo) != manifiesto["commit"]):
-        fallar("el borrador cambio durante la publicacion. No se ha publicado nada.")
-    gh("release", "edit", f"v{version}", "--repo", args.repo, "--draft=false")
-    print(f"Release v{version} publicada.")
+    print("Subiendo la firma...")
+    gh("release", "upload", f"v{version}", "--repo", args.repo, "--clobber", ruta_firma)
+    print(f"Firma de v{version} subida.")
 
 
 if __name__ == "__main__":

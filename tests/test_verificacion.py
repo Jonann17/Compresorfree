@@ -276,7 +276,7 @@ def test_falta_campo_obligatorio(campo):
         cargar(m)
 
 
-@pytest.mark.parametrize("version", ["1.2", "1.2.3.4", "v1.2.0", "1.2.0-", "1.2.0-a..b", "a.b.c",
+@pytest.mark.parametrize("version", ["1.2", "1.2.3.4", "v1.2.0", "1.2.0-", "1.2.0-a..b", "1.2.0-be ta", "a.b.c",
                                      "01.2.0x", "", "1.2.0\n"])
 def test_version_no_semver(version):
     m = manifiesto_valido(version="1.2.0")
@@ -390,6 +390,8 @@ def test_no_utf8_y_no_objeto():
     ("1.3.0-rc.1", "1.3.0-beta.9", True),
     ("1.3.0-rc", "1.3.0-rc.1", False),     # prefijo comun: el mas corto es menor
     ("1.3.0-1", "1.3.0-alfa", False),      # numerico < alfanumerico
+    ("1.3.0-rc.1", "1.2.0", True),
+    ("1.3.0-rc.1", "1.3.0-rc.1", False),
     ("1.0.0", "0.0.0-dev", True),
     ("2.0.0", "1.99.99", True),
     ("1.2.0", "raro", True),         # actual no estricta cuenta como 0.0.0
